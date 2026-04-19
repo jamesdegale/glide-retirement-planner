@@ -34,8 +34,9 @@ export async function middleware(request) {
 
   const { pathname } = request.nextUrl
   const isPublic = PUBLIC_PATHS.includes(pathname)
+  const isApi = pathname.startsWith('/api')
 
-  if (!user && !isPublic) {
+  if (!user && !isPublic && !isApi) {
     const url = request.nextUrl.clone()
     url.pathname = '/signin'
     return NextResponse.redirect(url)

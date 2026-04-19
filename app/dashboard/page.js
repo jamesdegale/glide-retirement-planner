@@ -1,6 +1,30 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '../../lib/supabase-server'
-import SignOutButton from './SignOutButton'
+import DashboardClient from './DashboardClient'
+
+const CATEGORY_ORDER = ['retirement', 'investment', 'banking', 'other', 'loans']
+
+function formatCategory(cat, subtype) {
+  if (cat === 'other' && subtype === 'real_estate') return 'real_estate'
+  return cat || 'other'
+}
+
+function computeFinancials(allAccounts) {
+  const assetCategories = new Set(['retirement', 'investment', 'banking', 'real_estate', 'other'])
+  let assets = 0
+  let liabilities = 0
+
+  for (const a of allAccounts) {
+    const bal = Number(a.current_balance) || 0
+    if (a.displayCategory === 'loans') {
+      liabilities += Math.abs(bal)
+    } else if (assetCategories.has(a.displayCategory)) {
+      assets += bal
+    }
+  }
+
+  return { assets, liabilities, netWorth: assets - liabilities }
+}
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -8,57 +32,84 @@ export default async function DashboardPage() {
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (!user) {
-    redirect('/signin')
+  if (!user) redirect('/signin')
+
+  const [plaidResult, manualResult, snapshotsResult] = await Promise.all([
+    supabase
+      .from('plaid_accounts')
+      .select(
+        'id, name, official_name, mask, type, subtype, category, current_balance, available_balance, iso_currency_code, updated_at, plaid_items(institution_name)'
+      )
+      .order('category'),
+    supabase
+      .from('manual_accounts')
+      .select('id, institution_name, name, type, subtype, category, current_balance, updated_at')
+      .order('category'),
+    supabase
+      .from('balance_snapshots')
+      .select('total_assets, total_liabilities, net_worth, snapshot_date')
+      .eq('user_id', user.id)
+      .order('snapshot_date', { ascending: true }),
+  ])
+
+  const plaidAccounts = (plaidResult.data || []).map((a) => ({
+    id: a.id,
+    name: a.name || a.official_name || 'Account',
+    mask: a.mask,
+    type: a.type,
+    subtype: a.subtype,
+    displayCategory: formatCategory(a.category, a.subtype),
+    current_balance: Number(a.current_balance) || 0,
+    institution: a.plaid_items?.institution_name || 'Linked institution',
+    updated_at: a.updated_at,
+    source: 'plaid',
+  }))
+
+  const manualAccounts = (manualResult.data || []).map((a) => ({
+    id: a.id,
+    name: a.name,
+    mask: null,
+    type: a.type,
+    subtype: a.subtype,
+    displayCategory: formatCategory(a.category, a.subtype),
+    current_balance: Number(a.current_balance) || 0,
+    institution: a.institution_name || 'Manual entry',
+    updated_at: a.updated_at,
+    source: 'manual',
+  }))
+
+  const allAccounts = [...plaidAccounts, ...manualAccounts]
+  const snapshots = snapshotsResult.data || []
+  const { assets, liabilities, netWorth } = computeFinancials(allAccounts)
+
+  const today = new Date().toISOString().slice(0, 10)
+  const hasToday = snapshots.some((s) => s.snapshot_date === today)
+
+  if (!hasToday && allAccounts.length > 0) {
+    await supabase.from('balance_snapshots').upsert(
+      {
+        user_id: user.id,
+        total_assets: assets,
+        total_liabilities: liabilities,
+        net_worth: netWorth,
+        snapshot_date: today,
+      },
+      { onConflict: 'user_id,snapshot_date' }
+    )
+    snapshots.push({
+      total_assets: assets,
+      total_liabilities: liabilities,
+      net_worth: netWorth,
+      snapshot_date: today,
+    })
   }
 
   return (
-    <main className="min-h-screen bg-slate-900">
-      <nav className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex justify-between items-center">
-        <div className="flex items-baseline gap-2">
-          <span className="text-white text-2xl font-bold tracking-tight">Glide</span>
-          <span className="text-blue-400 text-sm font-medium">by Clark.com</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-slate-400 text-sm hidden sm:inline">{user.email}</span>
-          <SignOutButton />
-        </div>
-      </nav>
-
-      <section className="px-6 py-12 max-w-5xl mx-auto">
-        <h1 className="text-white text-4xl font-bold mb-2">Your dashboard</h1>
-        <p className="text-slate-400 text-lg mb-10">
-          Welcome back. Here&apos;s your financial glide path at a glance.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6">
-            <div className="text-slate-400 text-sm mb-2">Net worth</div>
-            <div className="text-white text-3xl font-bold">—</div>
-            <div className="text-slate-500 text-sm mt-2">Connect an account to begin</div>
-          </div>
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6">
-            <div className="text-slate-400 text-sm mb-2">Retirement target</div>
-            <div className="text-white text-3xl font-bold">—</div>
-            <div className="text-slate-500 text-sm mt-2">Set a goal to track progress</div>
-          </div>
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6">
-            <div className="text-slate-400 text-sm mb-2">On-track score</div>
-            <div className="text-white text-3xl font-bold">—</div>
-            <div className="text-slate-500 text-sm mt-2">Available once you have a plan</div>
-          </div>
-        </div>
-
-        <div className="mt-10 bg-slate-800 border border-slate-700 rounded-2xl p-8">
-          <h2 className="text-white text-xl font-semibold mb-2">Get started</h2>
-          <p className="text-slate-400 mb-6">
-            Finish setting up your profile so we can build your personalized plan.
-          </p>
-          <button className="bg-blue-500 hover:bg-blue-400 text-white font-medium px-5 py-2.5 rounded-lg">
-            Set up my plan
-          </button>
-        </div>
-      </section>
-    </main>
+    <DashboardClient
+      userEmail={user.email}
+      accounts={allAccounts}
+      snapshots={snapshots}
+      financials={{ assets, liabilities, netWorth }}
+    />
   )
 }
