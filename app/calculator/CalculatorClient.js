@@ -26,9 +26,11 @@ const ACCOUNT_TYPES = [
   { value: 'brokerage', label: 'Brokerage', bucket: 'brokerage' },
   { value: 'cash', label: 'Cash / Savings', bucket: 'cash' },
   { value: 'other_investment', label: 'Other investments', bucket: 'brokerage' },
+]
+const LEGACY_ACCOUNT_TYPES = [
   { value: 'real_estate', label: 'Real Estate', bucket: 'real_estate' },
 ]
-const TYPE_META = Object.fromEntries(ACCOUNT_TYPES.map((t) => [t.value, t]))
+const TYPE_META = Object.fromEntries([...ACCOUNT_TYPES, ...LEGACY_ACCOUNT_TYPES].map((t) => [t.value, t]))
 const OWNERS = [
   { value: 'self', label: 'You' },
   { value: 'spouse', label: 'Spouse' },
@@ -107,6 +109,14 @@ const DEFAULT_INPUTS = {
   stateTaxRate: 0,
   expectLumpSum: false, lumpSumAmount: 0, lumpSumAge: 65,
   incomeSources: [], majorExpenses: [], accounts: [], showFutureDollars: false,
+}
+
+function estimateSSBenefit(annualIncome) {
+  if (!annualIncome || annualIncome < 30000) return 0
+  const monthlyIncome = annualIncome / 12
+  if (monthlyIncome <= 1174) return Math.round(monthlyIncome * 0.9)
+  if (monthlyIncome <= 7078) return Math.round(1174 * 0.9 + (monthlyIncome - 1174) * 0.32)
+  return Math.round(1174 * 0.9 + (7078 - 1174) * 0.32 + (Math.min(monthlyIncome, 14500) - 7078) * 0.15)
 }
 
 const FIELD_TOOLTIPS = {
@@ -1243,23 +1253,37 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
               <Section title="Accounts" right={<button onClick={addAccount} className="text-xs font-medium text-blue-600 hover:text-blue-700">+ Add</button>}>
                 <p className="text-xs text-slate-500 leading-relaxed">Add the accounts that will fund your retirement. You can enter each account individually or combine like types (e.g. &quot;All 401(k) balances: $500k&quot;). What matters is the total balance and the tax treatment.</p>
                 <p className="text-xs text-slate-500 leading-relaxed mt-2">Precious metals, crypto, and other alternative investments go under &quot;Other investments&quot; — we model them using the same return assumptions as a diversified brokerage account.</p>
+                <p className="text-xs text-slate-500 leading-relaxed mt-2">Your home and rental properties aren&apos;t tracked here. If you plan to downsize, add the expected proceeds as a Lump Sum below. If you have rental income, add it as an Income Source.</p>
                 {inputs.accounts.length === 0 && <p className="text-slate-400 text-xs">Enter your birth date and add at least one account to see your plan.</p>}
                 {inputs.accounts.map((a) => (
-                  <div key={a.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
-                    <div className="flex gap-1.5">
-                      <input type="text" placeholder="Account name" value={a.name} onChange={(e) => updateAccount(a.id, { name: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                      <button onClick={() => removeAccount(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
+                  a.type === 'real_estate' ? (
+                    <div key={a.id} className="border border-slate-200 bg-slate-50 rounded-lg p-2 space-y-1 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-700 font-medium">{a.name || 'Real estate'}</span>
+                        <button onClick={() => removeAccount(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-500">
+                        <span>Real estate — {fmt(a.balance || 0)}</span>
+                        <span className="text-[10px] text-slate-400">Tracked in net worth only</span>
+                      </div>
                     </div>
-                    <div className="grid gap-1.5" style={{ gridTemplateColumns: '1.2fr 70px 90px' }}>
-                      <select value={a.type} onChange={(e) => updateAccount(a.id, { type: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white min-w-0">
-                        {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                      </select>
-                      <select value={a.owner} onChange={(e) => updateAccount(a.id, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
-                        {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                      </select>
-                      <input type="text" inputMode="numeric" placeholder="$0" value={a.balance ? fmt(a.balance) : ''} onChange={(e) => updateAccount(a.id, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
+                  ) : (
+                    <div key={a.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
+                      <div className="flex gap-1.5">
+                        <input type="text" placeholder="Account name" value={a.name} onChange={(e) => updateAccount(a.id, { name: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                        <button onClick={() => removeAccount(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
+                      </div>
+                      <div className="grid gap-1.5" style={{ gridTemplateColumns: '1.2fr 70px 90px' }}>
+                        <select value={a.type} onChange={(e) => updateAccount(a.id, { type: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white min-w-0">
+                          {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        </select>
+                        <select value={a.owner} onChange={(e) => updateAccount(a.id, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
+                          {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                        <input type="text" inputMode="numeric" placeholder="$0" value={a.balance ? fmt(a.balance) : ''} onChange={(e) => updateAccount(a.id, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
+                      </div>
                     </div>
-                  </div>
+                  )
                 ))}
               </Section>
 
@@ -1635,15 +1659,19 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
   }
   const removeIncomeSource = (id) => setInputs((p) => ({ ...p, incomeSources: (p.incomeSources || []).filter((s) => s.id !== id) }))
 
-  const [manualAccounts, setManualAccounts] = useState([{ id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
-  const updateManual = (id, patch) => setManualAccounts((p) => p.map((a) => a.id === id ? { ...a, ...patch } : a))
-  const removeManual = (id) => setManualAccounts((p) => p.filter((a) => a.id !== id))
-  const addManual = () => setManualAccounts((p) => [...p, { id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
-  const commitManual = () => {
-    const valid = manualAccounts.filter((a) => a.name.trim() && a.balance > 0)
-    if (valid.length === 0) return
-    setInputs((p) => ({ ...p, accounts: [...p.accounts, ...valid] }))
+  const [step4View, setStep4View] = useState('decide')
+  const [typeTotals, setTypeTotals] = useState(() =>
+    ACCOUNT_TYPES.map((t) => ({ type: t.value, label: t.label, balance: 0, owner: 'self' }))
+  )
+  const updateTypeTotal = (type, patch) => setTypeTotals((p) => p.map((t) => t.type === type ? { ...t, ...patch } : t))
+  const commitTypeTotals = () => {
+    const toAdd = typeTotals
+      .filter((t) => t.balance > 0)
+      .map((t) => ({ id: crypto.randomUUID(), name: t.label, type: t.type, owner: t.owner, balance: t.balance }))
+    if (toAdd.length === 0) return
+    setInputs((p) => ({ ...p, accounts: [...p.accounts, ...toAdd] }))
   }
+  const anyTypeBalance = typeTotals.some((t) => t.balance > 0)
 
   const headings = {
     1: { title: 'Tell us about you', sub: 'We need a few pieces of information to build your plan.', caption: 'About you' },
@@ -1707,14 +1735,21 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
       {step === 2 && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
           <p className="text-xs text-slate-500">All amounts in today&apos;s dollars.</p>
-          {inputs.spouseEnabled ? <>
-            <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
-            <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
-            <MF label="Spouse annual income" value={inputs.spouseAnnualIncome} onChange={(v) => setInput('spouseAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.spouseAnnualIncome} />
-            <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.spouseMonthlySavings} />
-          </> : <>
-            <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
-            <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
+          <div>
+            <MF label={inputs.spouseEnabled ? 'Your annual income' : 'Your annual income'} value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
+          </div>
+          <div>
+            <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} />
+            <p className="text-xs text-slate-500 leading-relaxed mt-1">Includes 401(k) contributions, IRA contributions, and any taxable investing.</p>
+          </div>
+          {inputs.spouseEnabled && <>
+            <div>
+              <MF label="Spouse annual income" value={inputs.spouseAnnualIncome} onChange={(v) => setInput('spouseAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.spouseAnnualIncome} />
+            </div>
+            <div>
+              <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} />
+              <p className="text-xs text-slate-500 leading-relaxed mt-1">Includes 401(k) contributions, IRA contributions, and any taxable investing. Enter $0 if your spouse doesn&apos;t have a dedicated savings vehicle.</p>
+            </div>
           </>}
           <Tog label="Increase savings yearly" checked={inputs.increaseSavings} onChange={(v) => setInput('increaseSavings', v)} tooltip={FIELD_TOOLTIPS.increaseSavings} />
           {inputs.increaseSavings && <NF label="Annual increase (%)" value={inputs.savingsIncreaseRate} min={0} max={20} step={0.5} onChange={(v) => setInput('savingsIncreaseRate', v)} />}
@@ -1734,11 +1769,34 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
 
       {step === 3 && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
-          <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} tooltip={FIELD_TOOLTIPS.retirementIncomeNeeded} />
-          <MF label="Your monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAmount} />
+          <div>
+            <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} />
+            <p className="text-xs text-slate-500 leading-relaxed mt-1">Gross pre-tax income you&apos;ll need annually in retirement, in today&apos;s dollars. A common rule of thumb is 70–80% of what you currently earn. Taxes are modeled separately and will appear in your plan results.</p>
+          </div>
+
+          <div>
+            <MF label="Your projected monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} />
+            <p className="text-xs text-slate-500 leading-relaxed mt-1">
+              Don&apos;t know your estimate? Visit ssa.gov/myaccount for a personalized number.
+              {inputs.userAnnualIncome > 0 && derivedAge > 0 && estimateSSBenefit(inputs.userAnnualIncome) > 0 && (
+                <> As a rough estimate, someone currently earning {fmt(inputs.userAnnualIncome)} at age {derivedAge} might expect around {fmt(estimateSSBenefit(inputs.userAnnualIncome))}/month at age 67.</>
+              )}
+              {' '}This estimate assumes roughly 30 years of work at similar earnings. Your actual benefit depends on your full earnings history.
+            </p>
+          </div>
           <NF label="Your SS start age" value={inputs.socialSecurityAge} min={62} max={70} onChange={(v) => setInput('socialSecurityAge', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAge} />
+
           {inputs.spouseEnabled && <>
-            <MF label="Spouse monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} tooltip={FIELD_TOOLTIPS.spouseSSAmount} />
+            <div>
+              <MF label="Spouse's projected monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} />
+              <p className="text-xs text-slate-500 leading-relaxed mt-1">
+                Visit ssa.gov/myaccount for a personalized estimate.
+                {inputs.spouseAnnualIncome > 0 && estimateSSBenefit(inputs.spouseAnnualIncome) > 0 && (
+                  <> Based on {fmt(inputs.spouseAnnualIncome)} of annual income, a rough estimate would be around {fmt(estimateSSBenefit(inputs.spouseAnnualIncome))}/month at age 67.</>
+                )}
+                {' '}Actual benefits depend on full earnings history.
+              </p>
+            </div>
             <NF label="Spouse SS start age" value={inputs.spouseSSAge} min={62} max={70} onChange={(v) => setInput('spouseSSAge', v)} tooltip={FIELD_TOOLTIPS.spouseSSAge} />
           </>}
 
@@ -1769,17 +1827,32 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
                 )}
               </div>
             ) : (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2 text-xs">
-                <input type="text" placeholder="Description (e.g., Teacher's pension)" value={incomeForm.description} onChange={(e) => setIncomeForm((p) => ({ ...p, description: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                <div className="grid grid-cols-3 gap-1.5">
-                  <input type="text" inputMode="numeric" placeholder="$/mo" value={incomeForm.amount ? fmt(incomeForm.amount) : ''} onChange={(e) => setIncomeForm((p) => ({ ...p, amount: parseMoney(e.target.value) }))} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                  <input type="number" placeholder="Start age" value={incomeForm.startAge} onChange={(e) => setIncomeForm((p) => ({ ...p, startAge: parseInt(e.target.value) || 0 }))} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                  <input type="number" placeholder="End age" value={incomeForm.endAge} onChange={(e) => setIncomeForm((p) => ({ ...p, endAge: parseInt(e.target.value) || 0 }))} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+              <div className="border border-slate-200 rounded-lg p-3 space-y-3 text-xs">
+                <label className="block">
+                  <span className="block text-xs text-slate-600 mb-1">Description</span>
+                  <input type="text" placeholder="e.g., Teacher's pension" value={incomeForm.description} onChange={(e) => setIncomeForm((p) => ({ ...p, description: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                </label>
+                <label className="block">
+                  <span className="block text-xs text-slate-600 mb-1">Monthly amount</span>
+                  <input type="text" inputMode="numeric" placeholder="$0" value={incomeForm.amount ? fmt(incomeForm.amount) : ''} onChange={(e) => setIncomeForm((p) => ({ ...p, amount: parseMoney(e.target.value) }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="block text-xs text-slate-600 mb-1">Start age</span>
+                    <input type="number" value={incomeForm.startAge} onChange={(e) => setIncomeForm((p) => ({ ...p, startAge: parseInt(e.target.value) || 0 }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-xs text-slate-600 mb-1">End age</span>
+                    <input type="number" value={incomeForm.endAge} onChange={(e) => setIncomeForm((p) => ({ ...p, endAge: parseInt(e.target.value) || 0 }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                  </label>
                 </div>
-                <select value={incomeForm.dollarType} onChange={(e) => setIncomeForm((p) => ({ ...p, dollarType: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900 bg-white">
-                  <option value="today">Today&apos;s dollars</option>
-                  <option value="future">Start-age dollars</option>
-                </select>
+                <label className="block">
+                  <span className="block text-xs text-slate-600 mb-1">Dollar type</span>
+                  <select value={incomeForm.dollarType} onChange={(e) => setIncomeForm((p) => ({ ...p, dollarType: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900 bg-white">
+                    <option value="today">Today&apos;s dollars</option>
+                    <option value="future">Start-age dollars</option>
+                  </select>
+                </label>
                 <Tog label="Inflation-adjusted (COLA)" checked={incomeForm.inflationAdjust} onChange={(v) => setIncomeForm((p) => ({ ...p, inflationAdjust: v }))} />
                 <div className="flex items-center gap-2 pt-1">
                   <button type="button" onClick={commitIncomeSource} disabled={!incomeForm.description.trim() || incomeForm.amount <= 0} className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 text-white text-xs font-medium px-3 py-1.5 rounded-md">Add</button>
@@ -1796,59 +1869,45 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
         </div>
       )}
 
-      {step === 4 && (
+      {step === 4 && step4View === 'decide' && (
         <div className="space-y-4">
+          <p className="text-sm text-slate-600 text-center -mt-2 mb-2">
+            How would you like to add your accounts?
+          </p>
+          <p className="text-xs text-slate-500 text-center mb-4">
+            Connecting via Plaid is fastest and keeps your plan automatically up to date. You can always add or edit accounts later.
+          </p>
+
           {plaidAccounts.length > 0 ? (
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-              <p className="text-sm font-semibold text-slate-900 mb-1">You have {plaidAccounts.length} account{plaidAccounts.length === 1 ? '' : 's'} connected via Plaid</p>
-              <p className="text-xs text-slate-500 mb-4">We&apos;ll import the current balances into your plan. You can refine categories and ownership later in the sidebar.</p>
+            <div className="bg-white border-2 border-blue-200 rounded-xl shadow-sm p-6">
+              <div className="flex items-center gap-2 mb-1">
+                <p className="text-sm font-semibold text-slate-900">Use your connected accounts</p>
+                <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">Recommended</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-4">You have {plaidAccounts.length} account{plaidAccounts.length === 1 ? '' : 's'} already linked via Plaid. We&apos;ll import the current balances into your plan.</p>
               <button type="button" onClick={usePlaid} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
                 Looks good, continue →
               </button>
             </div>
           ) : (
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-              <p className="text-sm font-semibold text-slate-900 mb-1">Connect with Plaid</p>
-              <p className="text-xs text-slate-500 mb-4">Automatically pull balances from your bank, brokerage, and retirement accounts.</p>
-              <Link href="/accounts/add" className="inline-block border border-blue-200 text-blue-600 hover:bg-blue-50 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-                Connect with Plaid →
+            <div className="bg-white border-2 border-blue-200 rounded-xl shadow-sm p-6">
+              <div className="flex items-center gap-2 mb-1">
+                <p className="text-sm font-semibold text-slate-900">Connect with Plaid</p>
+                <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">Recommended</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-4">Automatically sync balances from your bank, brokerage, and retirement accounts. Takes about 2 minutes.</p>
+              <Link href="/accounts/add" className="inline-block bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                Connect accounts with Plaid →
               </Link>
             </div>
           )}
 
-          <div className="text-center text-xs text-slate-400 uppercase tracking-wider">or</div>
-
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
             <p className="text-sm font-semibold text-slate-900 mb-1">Enter accounts manually</p>
-            <p className="text-xs text-slate-500 mb-4">Add the accounts that will fund your retirement. You can refine these later.</p>
-
-            <div className="space-y-2">
-              {manualAccounts.map((a) => (
-                <div key={a.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
-                  <div className="flex gap-1.5">
-                    <input type="text" placeholder="Account name" value={a.name} onChange={(e) => updateManual(a.id, { name: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                    <button type="button" onClick={() => removeManual(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
-                  </div>
-                  <div className="grid gap-1.5" style={{ gridTemplateColumns: '1.2fr 70px 90px' }}>
-                    <select value={a.type} onChange={(e) => updateManual(a.id, { type: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white min-w-0">
-                      {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                    </select>
-                    <select value={a.owner} onChange={(e) => updateManual(a.id, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
-                      {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
-                    <input type="text" inputMode="numeric" placeholder="$0" value={a.balance ? fmt(a.balance) : ''} onChange={(e) => updateManual(a.id, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <button type="button" onClick={addManual} className="text-xs font-medium text-blue-600 hover:text-blue-700 mt-3">+ Add another account</button>
-
-            <div className="flex justify-end mt-4">
-              <button type="button" onClick={commitManual} disabled={!manualAccounts.some((a) => a.name.trim() && a.balance > 0)} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-                Finish setup →
-              </button>
-            </div>
+            <p className="text-xs text-slate-500 mb-4">Best if you want to get started quickly or have accounts Plaid doesn&apos;t cover (like private investments).</p>
+            <button type="button" onClick={() => setStep4View('manual')} className="border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+              Enter manually →
+            </button>
           </div>
 
           <div className="text-center">
@@ -1859,6 +1918,49 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
 
           <div className="flex justify-between items-center pt-2">
             <button type="button" onClick={() => setStep(3)} className="text-xs text-slate-500 hover:text-slate-700">← Back</button>
+          </div>
+        </div>
+      )}
+
+      {step === 4 && step4View === 'manual' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 mb-1">Your account totals</h2>
+            <p className="text-xs text-slate-500 leading-relaxed">Enter the total balance for each account type you have. You can skip types you don&apos;t have, and add individual accounts later.</p>
+          </div>
+
+          <div className="space-y-2">
+            {typeTotals.map((t) => (
+              <div key={t.type} className="grid items-center gap-2 text-xs" style={{ gridTemplateColumns: inputs.spouseEnabled ? '1.4fr 90px 1fr' : '1.6fr 1fr' }}>
+                <div className="text-slate-700 font-medium flex items-center gap-1.5">
+                  {t.label}
+                  {t.type === 'other_investment' && <InfoTip>Precious metals, crypto, alternative investments.</InfoTip>}
+                </div>
+                {inputs.spouseEnabled && (
+                  <select value={t.owner} onChange={(e) => updateTypeTotal(t.type, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
+                    {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                )}
+                <input type="text" inputMode="numeric" placeholder="$0" value={t.balance ? fmt(t.balance) : ''} onChange={(e) => updateTypeTotal(t.type, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
+              </div>
+            ))}
+          </div>
+
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Need to track individual accounts? You can add named accounts after setup.
+          </p>
+
+          {!anyTypeBalance && (
+            <p className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3">
+              Enter at least one account balance to proceed, or use sample data to explore.
+            </p>
+          )}
+
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={() => setStep4View('decide')} className="text-xs text-slate-500 hover:text-slate-700">← Back to choose Plaid instead</button>
+            <button type="button" onClick={commitTypeTotals} disabled={!anyTypeBalance} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+              Continue →
+            </button>
           </div>
         </div>
       )}
