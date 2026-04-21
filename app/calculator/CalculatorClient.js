@@ -109,6 +109,27 @@ const DEFAULT_INPUTS = {
   incomeSources: [], majorExpenses: [], accounts: [], showFutureDollars: false,
 }
 
+const FIELD_TOOLTIPS = {
+  retirementAge: 'The age you plan to stop working full-time. This is when your primary income stops and portfolio withdrawals begin.',
+  spouseRetirementAge: 'The age your spouse plans to stop working full-time.',
+  lifeExpectancy: 'Plan for longer than you expect. Current life expectancy at 65 is roughly 85 for men and 88 for women, but half of people live beyond that. Planning to 90–95 provides a safety margin.',
+  retirementIncomeNeeded: "What you'll need to spend each year in retirement, in today's dollars. A common rule of thumb is 70–80% of your pre-retirement income, since you won't be saving, commuting, or paying FICA. Adjust based on your planned lifestyle.",
+  userAnnualIncome: "Your current annual income in today's dollars. Used to project earned income during working years.",
+  spouseAnnualIncome: "Your spouse's current annual income in today's dollars.",
+  userMonthlySavings: "What you currently save each month in today's dollars. This includes 401(k) contributions, IRA contributions, and any taxable investing.",
+  spouseMonthlySavings: "Your spouse's monthly savings in today's dollars. Enter $0 if your spouse doesn't have a dedicated savings vehicle.",
+  increaseSavings: 'Raises your monthly savings by the specified percentage each year, modeling typical career earnings growth.',
+  socialSecurityAmount: "Your estimated monthly benefit in today's dollars. Get your estimate from ssa.gov/myaccount. Benefits grow with inflation each year automatically.",
+  socialSecurityAge: 'Claiming at 62 reduces benefits permanently. Claiming at full retirement age (67) provides your full benefit. Delaying to 70 increases benefits by about 8% per year. Timing matters — a lot.',
+  spouseSSAmount: "Your spouse's estimated monthly benefit in today's dollars. Get an estimate from ssa.gov/myaccount.",
+  spouseSSAge: 'Each spouse can claim independently. Delaying increases benefits by about 8% per year up to age 70.',
+  preRetirementReturn: 'Your expected annual portfolio return before retirement. Historical stock market average is about 7% real (10% nominal). A diversified portfolio of stocks and bonds typically returns 5–8% over long periods. Higher assumptions are optimistic.',
+  postRetirementReturn: 'Your expected annual return during retirement. Usually lower than pre-retirement because portfolios get more conservative (more bonds, less stocks) to reduce volatility. Typical range is 4–6%.',
+  inflationRate: 'Historical average is about 2.5–3%. The Fed targets 2%. Recent years have seen higher inflation — using a slightly higher rate (2.5–3%) builds in a safety margin.',
+  retirementBalanceGoal: "The portion of your retirement-age balance you want remaining at life expectancy, as a percentage. Set to 0 if you don't have a specific target. Set to 100 if you want to preserve your full retirement principal (e.g., for inheritance). Set to 50 if you're comfortable drawing down half over your lifetime.",
+  stateTaxRate: 'Your effective state income tax rate in retirement. Many retirees pay 0% (Florida, Texas, Tennessee, Nevada, Washington, Wyoming, South Dakota, New Hampshire, Alaska). Typical state tax rates range from 3–6%. California, New York, New Jersey, and a few others run higher.',
+}
+
 function makeDemoInputs() {
   return {
     ...DEFAULT_INPUTS,
@@ -562,9 +583,9 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   const [renameError, setRenameError] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
   const [pendingSwitchId, setPendingSwitchId] = useState(null)
-  const [skipOnboarding, setSkipOnboarding] = useState(false)
   const [demoActive, setDemoActive] = useState(false)
   const demoLoadedRef = useRef(false)
+  const [nudgeVisible, setNudgeVisible] = useState(false)
   const aboutRef = useRef(null)
   const newFormRef = useRef(null)
   const renameInputRef = useRef(null)
@@ -625,6 +646,22 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     if (!demoActive) return
     if (JSON.stringify(inputs) !== JSON.stringify(makeDemoInputs())) setDemoActive(false)
   }, [inputs, demoActive])
+
+  useEffect(() => {
+    const key = `glide_onboarding_nudge_dismissed_${activeId || 'new'}`
+    try {
+      const dismissed = typeof window !== 'undefined' && window.localStorage.getItem(key) === 'dismissed'
+      setNudgeVisible(!dismissed)
+    } catch {
+      setNudgeVisible(false)
+    }
+  }, [activeId])
+
+  const dismissNudge = () => {
+    const key = `glide_onboarding_nudge_dismissed_${activeId || 'new'}`
+    try { window.localStorage.setItem(key, 'dismissed') } catch {}
+    setNudgeVisible(false)
+  }
 
   const setInput = (k, v) => setInputs((p) => ({ ...p, [k]: v }))
   const derivedAge = ageFromBirthDate(inputs.birthDate)
@@ -929,13 +966,11 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     !showComparison &&
     scenarios.length === 0 &&
     !demoActive &&
-    !skipOnboarding &&
     (!inputs.birthDate || inputs.accounts.length === 0)
 
   const startCustomPlan = () => {
     setInputs(DEFAULT_INPUTS)
     setDemoActive(false)
-    setSkipOnboarding(false)
     setEditing(true)
     router.replace('/calculator')
   }
@@ -1104,7 +1139,6 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
           usePlaid={usePlaid}
           derivedAge={derivedAge}
           derivedSpouseAge={derivedSpouseAge}
-          onSkipOnboarding={() => setSkipOnboarding(true)}
           onLoadDemo={() => { router.push('/calculator?demo=true') }}
         />
       ) : showComparison && scenarios.length >= 2 ? (
@@ -1188,21 +1222,21 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                     {inputs.spouseBirthDate && <span className="text-[10px] text-slate-500 mt-0.5 block">Age {derivedSpouseAge}</span>}
                   </label>
                 )}
-                <NF label="Your retirement age" value={inputs.retirementAge} min={40} max={90} onChange={(v) => setInput('retirementAge', v)} tooltip="The age you plan to stop working full-time. This is when your primary income stops and portfolio withdrawals begin." />
-                {inputs.spouseEnabled && <NF label="Spouse retirement age" value={inputs.spouseRetirementAge} min={40} max={90} onChange={(v) => setInput('spouseRetirementAge', v)} tooltip="The age your spouse plans to stop working full-time." />}
-                <NF label={inputs.spouseEnabled ? 'Life expectancy (longest-lived)' : 'Life expectancy'} value={inputs.lifeExpectancy} min={50} max={120} onChange={(v) => setInput('lifeExpectancy', v)} tooltip="Plan for longer than you expect. Current life expectancy at 65 is roughly 85 for men and 88 for women, but half of people live beyond that. Planning to 90–95 provides a safety margin." />
-                <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} tooltip="What you'll need to spend each year in retirement, in today's dollars. A common rule of thumb is 70–80% of your pre-retirement income, since you won't be saving, commuting, or paying FICA. Adjust based on your planned lifestyle." />
+                <NF label="Your retirement age" value={inputs.retirementAge} min={40} max={90} onChange={(v) => setInput('retirementAge', v)} tooltip={FIELD_TOOLTIPS.retirementAge} />
+                {inputs.spouseEnabled && <NF label="Spouse retirement age" value={inputs.spouseRetirementAge} min={40} max={90} onChange={(v) => setInput('spouseRetirementAge', v)} tooltip={FIELD_TOOLTIPS.spouseRetirementAge} />}
+                <NF label={inputs.spouseEnabled ? 'Life expectancy (longest-lived)' : 'Life expectancy'} value={inputs.lifeExpectancy} min={50} max={120} onChange={(v) => setInput('lifeExpectancy', v)} tooltip={FIELD_TOOLTIPS.lifeExpectancy} />
+                <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} tooltip={FIELD_TOOLTIPS.retirementIncomeNeeded} />
                 <p className="text-xs text-slate-500 mt-2">All amounts in today&apos;s dollars.</p>
                 {inputs.spouseEnabled ? <>
-                  <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} />
-                  <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip="What you currently save each month in today's dollars. This includes 401(k) contributions, IRA contributions, and any taxable investing." />
-                  <MF label="Spouse annual income" value={inputs.spouseAnnualIncome} onChange={(v) => setInput('spouseAnnualIncome', v)} />
-                  <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} tooltip="What your spouse currently saves each month in today's dollars. Includes 401(k), IRA, and taxable investing." />
+                  <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
+                  <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
+                  <MF label="Spouse annual income" value={inputs.spouseAnnualIncome} onChange={(v) => setInput('spouseAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.spouseAnnualIncome} />
+                  <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.spouseMonthlySavings} />
                 </> : <>
-                  <MF label="Annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} />
-                  <MF label="Monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip="What you currently save each month in today's dollars. This includes 401(k) contributions, IRA contributions, and any taxable investing." />
+                  <MF label="Annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
+                  <MF label="Monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
                 </>}
-                <Tog label="Increase savings yearly" checked={inputs.increaseSavings} onChange={(v) => setInput('increaseSavings', v)} tooltip="Raises your monthly savings by the specified percentage each year, modeling typical career earnings growth." />
+                <Tog label="Increase savings yearly" checked={inputs.increaseSavings} onChange={(v) => setInput('increaseSavings', v)} tooltip={FIELD_TOOLTIPS.increaseSavings} />
                 {inputs.increaseSavings && <NF label="Annual increase (%)" value={inputs.savingsIncreaseRate} min={0} max={20} step={0.5} onChange={(v) => setInput('savingsIncreaseRate', v)} />}
               </Section>
 
@@ -1234,11 +1268,11 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 <p className="text-xs text-slate-500 leading-relaxed mt-2">Social Security information below feeds into your plan automatically. Other income sources can be added and customized as needed.</p>
 
                 <h3 className="text-xs font-semibold text-slate-700 mt-4">Social Security</h3>
-                <MF label="Your monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} tooltip="Your estimated monthly benefit in today's dollars. Get your estimate from ssa.gov/myaccount. Benefits grow with inflation each year automatically." />
-                <NF label="Your SS start age" value={inputs.socialSecurityAge} min={62} max={70} onChange={(v) => setInput('socialSecurityAge', v)} tooltip="Claiming at 62 reduces benefits permanently. Claiming at full retirement age (67) provides your full benefit. Delaying to 70 increases benefits by about 8% per year. Timing matters — a lot." />
+                <MF label="Your monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAmount} />
+                <NF label="Your SS start age" value={inputs.socialSecurityAge} min={62} max={70} onChange={(v) => setInput('socialSecurityAge', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAge} />
                 {inputs.spouseEnabled && <>
-                  <MF label="Spouse monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} tooltip="Your spouse's estimated monthly benefit in today's dollars. Get an estimate from ssa.gov/myaccount." />
-                  <NF label="Spouse SS start age" value={inputs.spouseSSAge} min={62} max={70} onChange={(v) => setInput('spouseSSAge', v)} tooltip="Each spouse can claim independently. Delaying increases benefits by about 8% per year up to age 70." />
+                  <MF label="Spouse monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} tooltip={FIELD_TOOLTIPS.spouseSSAmount} />
+                  <NF label="Spouse SS start age" value={inputs.spouseSSAge} min={62} max={70} onChange={(v) => setInput('spouseSSAge', v)} tooltip={FIELD_TOOLTIPS.spouseSSAge} />
                 </>}
 
                 <div className="border-t border-slate-100 my-3" />
@@ -1296,15 +1330,15 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
               </Section>
 
               <Section title="Growth assumptions">
-                <NF label="Pre-retirement return (%)" value={inputs.preRetirementReturn} min={0} max={15} step={0.25} onChange={(v) => setInput('preRetirementReturn', v)} tooltip="Your expected annual portfolio return before retirement. Historical stock market average is about 7% real (10% nominal). A diversified portfolio of stocks and bonds typically returns 5–8% over long periods. Higher assumptions are optimistic." />
-                <NF label="Post-retirement return (%)" value={inputs.postRetirementReturn} min={0} max={15} step={0.25} onChange={(v) => setInput('postRetirementReturn', v)} tooltip="Your expected annual return during retirement. Usually lower than pre-retirement because portfolios get more conservative (more bonds, less stocks) to reduce volatility. Typical range is 4–6%." />
-                <NF label="Inflation (%)" value={inputs.inflationRate} min={0} max={10} step={0.25} onChange={(v) => setInput('inflationRate', v)} tooltip="Historical average is about 2.5–3%. The Fed targets 2%. Recent years have seen higher inflation — using a slightly higher rate (2.5–3%) builds in a safety margin." />
-                <NF label="Final balance target (%)" value={inputs.retirementBalanceGoal} min={0} max={200} step={5} onChange={(v) => setInput('retirementBalanceGoal', v)} tooltip="The portion of your retirement-age balance you want remaining at life expectancy, as a percentage. Set to 0 if you don't have a specific target. Set to 100 if you want to preserve your full retirement principal (e.g., for inheritance). Set to 50 if you're comfortable drawing down half over your lifetime." />
+                <NF label="Pre-retirement return (%)" value={inputs.preRetirementReturn} min={0} max={15} step={0.25} onChange={(v) => setInput('preRetirementReturn', v)} tooltip={FIELD_TOOLTIPS.preRetirementReturn} />
+                <NF label="Post-retirement return (%)" value={inputs.postRetirementReturn} min={0} max={15} step={0.25} onChange={(v) => setInput('postRetirementReturn', v)} tooltip={FIELD_TOOLTIPS.postRetirementReturn} />
+                <NF label="Inflation (%)" value={inputs.inflationRate} min={0} max={10} step={0.25} onChange={(v) => setInput('inflationRate', v)} tooltip={FIELD_TOOLTIPS.inflationRate} />
+                <NF label="Final balance target (%)" value={inputs.retirementBalanceGoal} min={0} max={200} step={5} onChange={(v) => setInput('retirementBalanceGoal', v)} tooltip={FIELD_TOOLTIPS.retirementBalanceGoal} />
               </Section>
 
               <Section title="Tax assumptions">
                 <p className="text-xs text-slate-500 leading-relaxed">Federal taxes are modeled using 2026 brackets and the standard deduction. Enter your effective state income tax rate below.</p>
-                <NF label="State income tax rate (%)" value={inputs.stateTaxRate} min={0} max={15} step={0.25} onChange={(v) => setInput('stateTaxRate', v)} tooltip="Your effective state income tax rate in retirement. Many retirees pay 0% (Florida, Texas, Tennessee, Nevada, Washington, Wyoming, South Dakota, New Hampshire, Alaska). Typical state tax rates range from 3–6%. California, New York, New Jersey, and a few others run higher." />
+                <NF label="State income tax rate (%)" value={inputs.stateTaxRate} min={0} max={15} step={0.25} onChange={(v) => setInput('stateTaxRate', v)} tooltip={FIELD_TOOLTIPS.stateTaxRate} />
               </Section>
 
               {!hasSaved && (
@@ -1326,6 +1360,14 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
             </div>
           ) : (
             <>
+              {nudgeVisible && !demoActive && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-start justify-between gap-3">
+                  <p className="text-sm text-slate-700">
+                    <span className="font-semibold">Your plan is live.</span> Review your assumptions in the sidebar — you can adjust growth rates, add major expenses, model lump sums, and more.
+                  </p>
+                  <button onClick={dismissNudge} aria-label="Dismiss" className="text-slate-400 hover:text-slate-600 text-lg leading-none flex-shrink-0">×</button>
+                </div>
+              )}
               {/* Monte Carlo hero */}
               <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
                 <div className="flex items-start justify-between gap-4">
@@ -1528,37 +1570,72 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   )
 }
 
-function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, derivedAge, derivedSpouseAge, onSkipOnboarding, onLoadDemo }) {
-  const hasBirthDate = !!inputs.birthDate
-  const hasAccounts = inputs.accounts.length > 0
-  const initialStep = hasBirthDate ? 2 : 1
-  const [step, setStep] = useState(initialStep)
-  const [step1Error, setStep1Error] = useState(null)
+function ProgressIndicator({ step, total }) {
+  return (
+    <div className="flex items-center gap-3 mb-4 justify-center">
+      <span className="text-xs text-slate-400 uppercase tracking-wider">Step {step} of {total}</span>
+      <div className="flex gap-1.5">
+        {Array.from({ length: total }).map((_, i) => (
+          <span key={i} className={`w-1.5 h-1.5 rounded-full ${i < step ? 'bg-blue-500' : 'bg-slate-200'}`} />
+        ))}
+      </div>
+    </div>
+  )
+}
 
-  const canAdvanceFromStep1 =
+function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, derivedAge, derivedSpouseAge, onLoadDemo }) {
+  const [step, setStep] = useState(1)
+  const [stepError, setStepError] = useState(null)
+
+  const step1Valid =
     inputs.birthDate &&
     derivedAge >= 10 && derivedAge <= 110 &&
     inputs.retirementAge > derivedAge &&
+    inputs.lifeExpectancy > inputs.retirementAge &&
     (!inputs.spouseEnabled || (inputs.spouseBirthDate && derivedSpouseAge >= 10 && inputs.spouseRetirementAge > derivedSpouseAge))
 
-  const advanceToStep2 = () => {
-    if (!canAdvanceFromStep1) {
-      if (!inputs.birthDate) setStep1Error('Enter your birth date to continue.')
-      else if (derivedAge < 10 || derivedAge > 110) setStep1Error('Birth date looks off — double check.')
-      else if (inputs.retirementAge <= derivedAge) setStep1Error('Retirement age must be after your current age.')
-      else if (inputs.spouseEnabled && !inputs.spouseBirthDate) setStep1Error("Enter your spouse's birth date.")
-      else if (inputs.spouseEnabled && inputs.spouseRetirementAge <= derivedSpouseAge) setStep1Error("Spouse's retirement age must be after their current age.")
+  const advanceFromStep1 = () => {
+    if (!step1Valid) {
+      if (!inputs.birthDate) setStepError('Enter your birth date to continue.')
+      else if (derivedAge < 10 || derivedAge > 110) setStepError('Birth date looks off — double check.')
+      else if (inputs.retirementAge <= derivedAge) setStepError('Retirement age must be after your current age.')
+      else if (inputs.lifeExpectancy <= inputs.retirementAge) setStepError('Life expectancy must be greater than retirement age.')
+      else if (inputs.spouseEnabled && !inputs.spouseBirthDate) setStepError("Enter your spouse's birth date.")
+      else if (inputs.spouseEnabled && inputs.spouseRetirementAge <= derivedSpouseAge) setStepError("Spouse's retirement age must be after their current age.")
       return
     }
-    setStep1Error(null)
-    if (plaidAccounts.length > 0 && inputs.accounts.length === 0) {
-      usePlaid()
-      return
-    }
+    setStepError(null)
     setStep(2)
   }
 
-  const [manualAccounts, setManualAccounts] = useState(hasAccounts ? [] : [{ id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
+  const zeroIncomeAndSavings =
+    (inputs.userAnnualIncome || 0) === 0 &&
+    (inputs.userMonthlySavings || 0) === 0 &&
+    (!inputs.spouseEnabled || ((inputs.spouseAnnualIncome || 0) === 0 && (inputs.spouseMonthlySavings || 0) === 0))
+
+  const [showIncomeForm, setShowIncomeForm] = useState(false)
+  const blankIncomeForm = () => ({
+    description: '',
+    amount: 0,
+    startAge: inputs.retirementAge,
+    endAge: inputs.lifeExpectancy,
+    dollarType: 'today',
+    inflationAdjust: true,
+  })
+  const [incomeForm, setIncomeForm] = useState(blankIncomeForm)
+
+  const commitIncomeSource = () => {
+    if (!incomeForm.description.trim() || incomeForm.amount <= 0) return
+    setInputs((p) => ({
+      ...p,
+      incomeSources: [...(p.incomeSources || []), { id: crypto.randomUUID(), ...incomeForm }],
+    }))
+    setIncomeForm(blankIncomeForm())
+    setShowIncomeForm(false)
+  }
+  const removeIncomeSource = (id) => setInputs((p) => ({ ...p, incomeSources: (p.incomeSources || []).filter((s) => s.id !== id) }))
+
+  const [manualAccounts, setManualAccounts] = useState([{ id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
   const updateManual = (id, patch) => setManualAccounts((p) => p.map((a) => a.id === id ? { ...a, ...patch } : a))
   const removeManual = (id) => setManualAccounts((p) => p.filter((a) => a.id !== id))
   const addManual = () => setManualAccounts((p) => [...p, { id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
@@ -1568,23 +1645,23 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
     setInputs((p) => ({ ...p, accounts: [...p.accounts, ...valid] }))
   }
 
+  const headings = {
+    1: { title: 'Tell us about you', sub: 'We need a few pieces of information to build your plan.', caption: 'About you' },
+    2: { title: 'Your income and savings', sub: 'What you earn today and what you set aside each month.', caption: 'Your money today' },
+    3: { title: 'Your retirement income', sub: 'What income do you expect in retirement? Include Social Security and any pensions, annuities, or part-time work.', caption: 'Retirement income' },
+    4: { title: 'Your accounts', sub: 'Tell us about the accounts that will fund your retirement.', caption: 'Your accounts' },
+  }
+  const head = headings[step]
+
   return (
-    <div className="max-w-[700px] mx-auto px-4 py-12 sm:py-20">
+    <div className="max-w-[700px] mx-auto px-4 py-10 sm:py-14">
       <div className="text-center">
-        <h1 className="text-2xl font-bold text-slate-900">
-          {step === 1 ? "Let's plan your retirement" : 'Add your accounts'}
-        </h1>
-        <p className="text-base text-slate-500 mt-2 mb-8">
-          {step === 1
-            ? 'We need a few pieces of information to build your plan.'
-            : 'Tell us about the accounts that will fund your retirement.'}
-        </p>
-        <p className="text-xs text-slate-400 uppercase tracking-wider mb-6">
-          Step {step} of 2: {step === 1 ? 'Tell us about you' : 'Your accounts and savings'}
-        </p>
+        <ProgressIndicator step={step} total={4} />
+        <h1 className="text-2xl font-bold text-slate-900">{head.title}</h1>
+        <p className="text-base text-slate-500 mt-2 mb-6">{head.sub}</p>
       </div>
 
-      {step === 1 ? (
+      {step === 1 && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
           <div>
             <p className="text-xs text-slate-600 mb-2">Planning for</p>
@@ -1601,11 +1678,7 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
             {inputs.birthDate && <span className="text-[10px] text-slate-500 mt-1 block">Age {derivedAge}</span>}
           </label>
 
-          <label className="block text-xs text-slate-600">
-            <span className="block mb-1">When do you want to retire?</span>
-            <input type="number" min={40} max={90} value={inputs.retirementAge} onChange={(e) => setInput('retirementAge', parseFloat(e.target.value) || 0)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
-          </label>
+          <NF label="When do you want to retire?" value={inputs.retirementAge} min={40} max={90} onChange={(v) => setInput('retirementAge', v)} tooltip={FIELD_TOOLTIPS.retirementAge} />
 
           {inputs.spouseEnabled && (
             <>
@@ -1615,30 +1688,122 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
                 {inputs.spouseBirthDate && <span className="text-[10px] text-slate-500 mt-1 block">Age {derivedSpouseAge}</span>}
               </label>
-              <label className="block text-xs text-slate-600">
-                <span className="block mb-1">Spouse retirement age</span>
-                <input type="number" min={40} max={90} value={inputs.spouseRetirementAge} onChange={(e) => setInput('spouseRetirementAge', parseFloat(e.target.value) || 0)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
-              </label>
+              <NF label="Spouse retirement age" value={inputs.spouseRetirementAge} min={40} max={90} onChange={(v) => setInput('spouseRetirementAge', v)} tooltip={FIELD_TOOLTIPS.spouseRetirementAge} />
             </>
           )}
 
-          {step1Error && <p className="text-xs text-red-500">{step1Error}</p>}
+          <NF label="Life expectancy" value={inputs.lifeExpectancy} min={50} max={120} onChange={(v) => setInput('lifeExpectancy', v)} tooltip={FIELD_TOOLTIPS.lifeExpectancy} />
+
+          {stepError && <p className="text-xs text-red-500">{stepError}</p>}
 
           <div className="flex justify-end pt-2">
-            <button type="button" onClick={advanceToStep2} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+            <button type="button" onClick={advanceFromStep1} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
               Continue →
             </button>
           </div>
         </div>
-      ) : (
+      )}
+
+      {step === 2 && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
+          <p className="text-xs text-slate-500">All amounts in today&apos;s dollars.</p>
+          {inputs.spouseEnabled ? <>
+            <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
+            <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
+            <MF label="Spouse annual income" value={inputs.spouseAnnualIncome} onChange={(v) => setInput('spouseAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.spouseAnnualIncome} />
+            <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.spouseMonthlySavings} />
+          </> : <>
+            <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
+            <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
+          </>}
+          <Tog label="Increase savings yearly" checked={inputs.increaseSavings} onChange={(v) => setInput('increaseSavings', v)} tooltip={FIELD_TOOLTIPS.increaseSavings} />
+          {inputs.increaseSavings && <NF label="Annual increase (%)" value={inputs.savingsIncreaseRate} min={0} max={20} step={0.5} onChange={(v) => setInput('savingsIncreaseRate', v)} />}
+
+          {zeroIncomeAndSavings && (
+            <p className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3">
+              You can proceed with zeros, but your plan will assume no future income or savings.
+            </p>
+          )}
+
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={() => { setStepError(null); setStep(1) }} className="text-xs text-slate-500 hover:text-slate-700">← Back</button>
+            <button type="button" onClick={() => setStep(3)} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">Continue →</button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
+          <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} tooltip={FIELD_TOOLTIPS.retirementIncomeNeeded} />
+          <MF label="Your monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAmount} />
+          <NF label="Your SS start age" value={inputs.socialSecurityAge} min={62} max={70} onChange={(v) => setInput('socialSecurityAge', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAge} />
+          {inputs.spouseEnabled && <>
+            <MF label="Spouse monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} tooltip={FIELD_TOOLTIPS.spouseSSAmount} />
+            <NF label="Spouse SS start age" value={inputs.spouseSSAge} min={62} max={70} onChange={(v) => setInput('spouseSSAge', v)} tooltip={FIELD_TOOLTIPS.spouseSSAge} />
+          </>}
+
+          <div className="border-t border-slate-100 pt-4">
+            <p className="text-xs text-slate-600 mb-1">Other retirement income</p>
+            <p className="text-xs text-slate-500 leading-relaxed mb-3">Pensions, annuities, rental income, and part-time work go here. These are income streams that pay you monthly — not assets you draw from.</p>
+
+            {(inputs.incomeSources || []).length > 0 && (
+              <div className="space-y-1.5 mb-3">
+                {inputs.incomeSources.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between text-xs bg-slate-50 rounded-lg px-3 py-2">
+                    <span className="text-slate-700">
+                      <span className="font-medium">{s.description || 'Income'}</span> — {fmt(s.amount)}/mo, ages {s.startAge}–{s.endAge}
+                    </span>
+                    <button type="button" onClick={() => removeIncomeSource(s.id)} className="text-slate-400 hover:text-red-500 text-sm leading-none ml-2">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!showIncomeForm ? (
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowIncomeForm(true)} className="text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md px-3 py-1.5">
+                  {(inputs.incomeSources || []).length > 0 ? '+ Add another' : 'Yes, add one'}
+                </button>
+                {(inputs.incomeSources || []).length === 0 && (
+                  <span className="text-xs text-slate-400 self-center">or skip for now</span>
+                )}
+              </div>
+            ) : (
+              <div className="border border-slate-200 rounded-lg p-3 space-y-2 text-xs">
+                <input type="text" placeholder="Description (e.g., Teacher's pension)" value={incomeForm.description} onChange={(e) => setIncomeForm((p) => ({ ...p, description: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                <div className="grid grid-cols-3 gap-1.5">
+                  <input type="text" inputMode="numeric" placeholder="$/mo" value={incomeForm.amount ? fmt(incomeForm.amount) : ''} onChange={(e) => setIncomeForm((p) => ({ ...p, amount: parseMoney(e.target.value) }))} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                  <input type="number" placeholder="Start age" value={incomeForm.startAge} onChange={(e) => setIncomeForm((p) => ({ ...p, startAge: parseInt(e.target.value) || 0 }))} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                  <input type="number" placeholder="End age" value={incomeForm.endAge} onChange={(e) => setIncomeForm((p) => ({ ...p, endAge: parseInt(e.target.value) || 0 }))} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                </div>
+                <select value={incomeForm.dollarType} onChange={(e) => setIncomeForm((p) => ({ ...p, dollarType: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900 bg-white">
+                  <option value="today">Today&apos;s dollars</option>
+                  <option value="future">Start-age dollars</option>
+                </select>
+                <Tog label="Inflation-adjusted (COLA)" checked={incomeForm.inflationAdjust} onChange={(v) => setIncomeForm((p) => ({ ...p, inflationAdjust: v }))} />
+                <div className="flex items-center gap-2 pt-1">
+                  <button type="button" onClick={commitIncomeSource} disabled={!incomeForm.description.trim() || incomeForm.amount <= 0} className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 text-white text-xs font-medium px-3 py-1.5 rounded-md">Add</button>
+                  <button type="button" onClick={() => { setIncomeForm(blankIncomeForm()); setShowIncomeForm(false) }} className="text-xs text-slate-500 hover:text-slate-700">Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={() => { setStepError(null); setStep(2) }} className="text-xs text-slate-500 hover:text-slate-700">← Back</button>
+            <button type="button" onClick={() => setStep(4)} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">Continue →</button>
+          </div>
+        </div>
+      )}
+
+      {step === 4 && (
         <div className="space-y-4">
           {plaidAccounts.length > 0 ? (
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-              <p className="text-sm font-semibold text-slate-900 mb-1">Use your connected accounts</p>
-              <p className="text-xs text-slate-500 mb-4">We found {plaidAccounts.length} account{plaidAccounts.length === 1 ? '' : 's'} linked via Plaid. Import them into your plan.</p>
+              <p className="text-sm font-semibold text-slate-900 mb-1">You have {plaidAccounts.length} account{plaidAccounts.length === 1 ? '' : 's'} connected via Plaid</p>
+              <p className="text-xs text-slate-500 mb-4">We&apos;ll import the current balances into your plan. You can refine categories and ownership later in the sidebar.</p>
               <button type="button" onClick={usePlaid} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-                Import Plaid accounts →
+                Looks good, continue →
               </button>
             </div>
           ) : (
@@ -1677,13 +1842,11 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
               ))}
             </div>
 
-            <button type="button" onClick={addManual} className="text-xs font-medium text-blue-600 hover:text-blue-700 mt-3">
-              + Add another account
-            </button>
+            <button type="button" onClick={addManual} className="text-xs font-medium text-blue-600 hover:text-blue-700 mt-3">+ Add another account</button>
 
             <div className="flex justify-end mt-4">
               <button type="button" onClick={commitManual} disabled={!manualAccounts.some((a) => a.name.trim() && a.balance > 0)} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-                Continue →
+                Finish setup →
               </button>
             </div>
           </div>
@@ -1695,18 +1858,8 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
           </div>
 
           <div className="flex justify-between items-center pt-2">
-            <button type="button" onClick={() => setStep(1)} className="text-xs text-slate-500 hover:text-slate-700">
-              ← Back
-            </button>
+            <button type="button" onClick={() => setStep(3)} className="text-xs text-slate-500 hover:text-slate-700">← Back</button>
           </div>
-        </div>
-      )}
-
-      {step === 1 && (
-        <div className="text-center mt-6">
-          <button type="button" onClick={onSkipOnboarding} className="text-sm text-slate-500 underline hover:text-slate-700">
-            Have an existing plan? Skip setup and enter details manually →
-          </button>
         </div>
       )}
     </div>
