@@ -547,7 +547,7 @@ function Shell({ children, userEmail, onSignOut }) {
       <div className="bg-white border-b border-slate-200 px-6">
         <div className="max-w-[1400px] mx-auto flex gap-6">
           <button className="px-1 py-3 text-sm font-medium text-blue-600 border-b-2 border-blue-500">
-            Dashboard
+            Net Worth Dashboard
           </button>
           <Link
             href="/calculator"

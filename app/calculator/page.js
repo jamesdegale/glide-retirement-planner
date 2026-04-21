@@ -20,11 +20,19 @@ export default async function CalculatorPage() {
   } = await supabase.auth.getUser()
   if (!user) redirect('/signin')
 
-  const { data: plaidRaw } = await supabase
-    .from('plaid_accounts')
-    .select('id, name, official_name, mask, type, subtype, category, current_balance, plaid_items(institution_name)')
+  const [plaidResult, scenariosResult] = await Promise.all([
+    supabase
+      .from('plaid_accounts')
+      .select('id, name, official_name, mask, type, subtype, category, current_balance, plaid_items(institution_name)'),
+    supabase
+      .from('retirement_scenarios')
+      .select('id, name, is_base, inputs, results, updated_at')
+      .eq('user_id', user.id)
+      .order('is_base', { ascending: false })
+      .order('created_at'),
+  ])
 
-  const plaidAccounts = (plaidRaw || [])
+  const plaidAccounts = (plaidResult.data || [])
     .filter((a) => a.category !== 'loans' && (Number(a.current_balance) || 0) > 0)
     .map((a) => ({
       id: a.id,
@@ -35,17 +43,11 @@ export default async function CalculatorPage() {
       type: mapPlaidToAccountType(a.subtype, a.category),
     }))
 
-  const { data: savedPlan } = await supabase
-    .from('retirement_plans')
-    .select('inputs, results, updated_at')
-    .eq('user_id', user.id)
-    .maybeSingle()
-
   return (
     <CalculatorClient
       userEmail={user.email}
       plaidAccounts={plaidAccounts}
-      savedPlan={savedPlan || null}
+      scenarios={scenariosResult.data || []}
     />
   )
 }

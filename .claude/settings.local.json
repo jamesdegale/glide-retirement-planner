@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npx next:*)",
       "Bash(npx eslint:*)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(git add *)"
     ]
   }
 }
