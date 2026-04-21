@@ -1,8 +1,9 @@
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import WelcomeScreen from './WelcomeScreen'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -96,8 +97,11 @@ function ChartTooltip({ active, payload }) {
   )
 }
 
-export default function DashboardClient({ userEmail, accounts, snapshots, financials }) {
+export default function DashboardClient({ userEmail, accounts, snapshots, financials, scenarioCount = 0 }) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const setupRequested = searchParams?.get('setup') === '1'
+  const forceWelcome = searchParams?.get('welcome') === '1'
   const [period, setPeriod] = useState('1Y')
   const [selectedAccount, setSelectedAccount] = useState(null)
   const [removing, setRemoving] = useState(null)
@@ -210,6 +214,10 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
     router.push('/signin')
     router.refresh()
   }, [router])
+
+  if (forceWelcome || (!hasAccounts && scenarioCount === 0 && !setupRequested)) {
+    return <WelcomeScreen userEmail={userEmail} onSignOut={handleSignOut} />
+  }
 
   if (!hasAccounts) {
     return (
@@ -496,7 +504,18 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
         </main>
 
         {/* RIGHT PANEL — Insights */}
-        <aside className="w-full lg:w-[280px] flex-shrink-0 order-3">
+        <aside className="w-full lg:w-[280px] flex-shrink-0 order-3 space-y-4">
+          {scenarioCount === 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <h3 className="text-sm font-semibold text-slate-900 mb-1">Plan your retirement</h3>
+              <p className="text-xs text-slate-600 leading-relaxed mb-3">
+                You&apos;re tracking your net worth — now see what it means for retirement.
+              </p>
+              <Link href="/calculator" className="inline-block text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 rounded-md px-2.5 py-1.5 transition-colors">
+                Start planning →
+              </Link>
+            </div>
+          )}
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-100">
               <h2 className="text-sm font-semibold text-slate-900">Insights</h2>
@@ -699,60 +718,55 @@ function EmptyState({
   onCancelManual,
 }) {
   return (
-    <div className="max-w-xl mx-auto px-4 py-16">
-      <div className="text-center mb-10">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-blue-50 border border-blue-100 mb-4">
-          <svg className="w-7 h-7 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z" />
-          </svg>
-        </div>
-        <h1 className="text-2xl font-bold text-slate-900 mb-2">Welcome to Glide</h1>
-        <p className="text-slate-500">
-          Connect your accounts to see your full financial picture.
+    <div className="max-w-[900px] mx-auto px-4 py-12 sm:py-16">
+      <div className="text-center mb-8">
+        <h1 className="text-2xl font-bold text-slate-900">Build your net worth dashboard</h1>
+        <p className="text-base text-slate-500 mt-2">
+          Connect your accounts to see your full financial picture in one place.
         </p>
       </div>
 
-      <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Link
           href="/accounts/add"
-          className="flex items-center gap-4 bg-white border border-slate-200 hover:border-blue-300 rounded-xl p-4 shadow-sm transition-colors group"
+          className="group bg-white border border-slate-200 hover:border-blue-300 hover:shadow-md rounded-2xl p-8 transition-all cursor-pointer flex flex-col"
         >
-          <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center">
-            <svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center mb-5">
+            <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.39a4.5 4.5 0 00-1.242-7.244l-4.5-4.5a4.5 4.5 0 00-6.364 6.364L4.344 8.25" />
             </svg>
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">
-              Connect accounts with Plaid
-            </p>
-            <p className="text-xs text-slate-500">Automatically sync bank, brokerage, and retirement accounts.</p>
-          </div>
-          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-          </svg>
+          <h2 className="text-lg font-semibold text-slate-900 mb-2">Connect with Plaid</h2>
+          <p className="text-sm text-slate-500 leading-relaxed mb-5 flex-1">
+            Automatically sync bank, brokerage, and retirement accounts.
+          </p>
+          <span className="text-sm font-medium text-blue-600 group-hover:text-blue-700">
+            Connect accounts →
+          </span>
         </Link>
 
         <button
           onClick={onAddManual}
-          className="w-full flex items-center gap-4 bg-white border border-slate-200 hover:border-blue-300 rounded-xl p-4 shadow-sm transition-colors group text-left"
+          className="group bg-white border border-slate-200 hover:border-emerald-300 hover:shadow-md rounded-2xl p-8 transition-all cursor-pointer flex flex-col text-left"
         >
-          <div className="flex-shrink-0 w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center">
-            <svg className="w-5 h-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center mb-5">
+            <svg className="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z" />
             </svg>
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">
-              Add manually
-            </p>
-            <p className="text-xs text-slate-500">Real estate, property, or accounts Plaid doesn&apos;t cover.</p>
-          </div>
-          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-          </svg>
+          <h2 className="text-lg font-semibold text-slate-900 mb-2">Add accounts manually</h2>
+          <p className="text-sm text-slate-500 leading-relaxed mb-5 flex-1">
+            For real estate, private investments, or accounts Plaid doesn&apos;t cover.
+          </p>
+          <span className="text-sm font-medium text-emerald-600 group-hover:text-emerald-700">
+            Add manually →
+          </span>
         </button>
       </div>
+
+      <p className="text-xs text-slate-400 text-center mt-6">
+        Already used the retirement planner? Your data will sync here automatically.
+      </p>
 
       {showManualForm && (
         <div className="mt-6">

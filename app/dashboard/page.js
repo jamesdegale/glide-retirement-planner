@@ -34,7 +34,7 @@ export default async function DashboardPage() {
 
   if (!user) redirect('/signin')
 
-  const [plaidResult, manualResult, snapshotsResult] = await Promise.all([
+  const [plaidResult, manualResult, snapshotsResult, scenariosResult] = await Promise.all([
     supabase
       .from('plaid_accounts')
       .select(
@@ -50,7 +50,13 @@ export default async function DashboardPage() {
       .select('total_assets, total_liabilities, net_worth, snapshot_date')
       .eq('user_id', user.id)
       .order('snapshot_date', { ascending: true }),
+    supabase
+      .from('retirement_scenarios')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id),
   ])
+
+  const scenarioCount = scenariosResult?.count || 0
 
   const plaidAccounts = (plaidResult.data || []).map((a) => ({
     id: a.id,
@@ -110,6 +116,7 @@ export default async function DashboardPage() {
       accounts={allAccounts}
       snapshots={snapshots}
       financials={{ assets, liabilities, netWorth }}
+      scenarioCount={scenarioCount}
     />
   )
 }

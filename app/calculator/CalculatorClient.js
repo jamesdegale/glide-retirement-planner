@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import Script from 'next/script'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -106,6 +107,40 @@ const DEFAULT_INPUTS = {
   stateTaxRate: 0,
   expectLumpSum: false, lumpSumAmount: 0, lumpSumAge: 65,
   incomeSources: [], majorExpenses: [], accounts: [], showFutureDollars: false,
+}
+
+function makeDemoInputs() {
+  return {
+    ...DEFAULT_INPUTS,
+    birthDate: '1969-06-15',
+    spouseEnabled: true,
+    spouseBirthDate: '1971-03-22',
+    retirementAge: 65,
+    spouseRetirementAge: 62,
+    lifeExpectancy: 90,
+    retirementIncomeNeeded: 110000,
+    userAnnualIncome: 160000,
+    userMonthlySavings: 2000,
+    spouseAnnualIncome: 80000,
+    spouseMonthlySavings: 500,
+    socialSecurityAmount: 2800,
+    socialSecurityAge: 67,
+    spouseSSAmount: 1900,
+    spouseSSAge: 67,
+    preRetirementReturn: 7,
+    postRetirementReturn: 5,
+    inflationRate: 2.5,
+    stateTaxRate: 0,
+    accounts: [
+      { id: 'demo-401k', name: 'Fidelity 401(k)', type: '401k', owner: 'self', balance: 425000 },
+      { id: 'demo-roth', name: 'Vanguard Roth IRA', type: 'roth_ira', owner: 'self', balance: 85000 },
+      { id: 'demo-trad', name: 'Spouse Traditional IRA', type: 'traditional_ira', owner: 'spouse', balance: 210000 },
+      { id: 'demo-brok', name: 'Schwab Brokerage', type: 'brokerage', owner: 'joint', balance: 195000 },
+      { id: 'demo-cash', name: 'Chase Savings', type: 'cash', owner: 'joint', balance: 45000 },
+    ],
+    incomeSources: [],
+    majorExpenses: [],
+  }
 }
 
 function fmt(v) {
@@ -504,6 +539,9 @@ function buildCashFlowRows(results, inputs) {
 // ─── COMPONENT ────────────────────────────────────────────────
 
 export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: initialScenarios }) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const demoParam = searchParams?.get('demo') === 'true'
   const [scenarios, setScenarios] = useState(initialScenarios)
   const [activeId, setActiveId] = useState(() => scenarios[0]?.id || null)
   const activeScenario = scenarios.find((s) => s.id === activeId) || null
@@ -524,6 +562,9 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   const [renameError, setRenameError] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
   const [pendingSwitchId, setPendingSwitchId] = useState(null)
+  const [skipOnboarding, setSkipOnboarding] = useState(false)
+  const [demoActive, setDemoActive] = useState(false)
+  const demoLoadedRef = useRef(false)
   const aboutRef = useRef(null)
   const newFormRef = useRef(null)
   const renameInputRef = useRef(null)
@@ -569,6 +610,21 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [showAbout, showNewForm])
+
+  useEffect(() => {
+    if (!demoParam) return
+    if (demoLoadedRef.current) return
+    if (initialScenarios && initialScenarios.length > 0) return
+    demoLoadedRef.current = true
+    setInputs(makeDemoInputs())
+    setDemoActive(true)
+    setEditing(false)
+  }, [demoParam, initialScenarios])
+
+  useEffect(() => {
+    if (!demoActive) return
+    if (JSON.stringify(inputs) !== JSON.stringify(makeDemoInputs())) setDemoActive(false)
+  }, [inputs, demoActive])
 
   const setInput = (k, v) => setInputs((p) => ({ ...p, [k]: v }))
   const derivedAge = ageFromBirthDate(inputs.birthDate)
@@ -869,6 +925,21 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   const fourPct = results ? results.retirementBalance * 0.04 : 0
   const dispBal = (v, ytd) => inputs.showFutureDollars ? v : v / Math.pow(1 + infl, ytd)
 
+  const needsOnboarding =
+    !showComparison &&
+    scenarios.length === 0 &&
+    !demoActive &&
+    !skipOnboarding &&
+    (!inputs.birthDate || inputs.accounts.length === 0)
+
+  const startCustomPlan = () => {
+    setInputs(DEFAULT_INPUTS)
+    setDemoActive(false)
+    setSkipOnboarding(false)
+    setEditing(true)
+    router.replace('/calculator')
+  }
+
   return (
     <div className="min-h-screen bg-[#f8fafc]">
       <Script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" strategy="afterInteractive" />
@@ -1010,7 +1081,33 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
         </div>
       )}
 
-      {showComparison && scenarios.length >= 2 ? (
+      {demoActive && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5">
+          <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-3">
+            <p className="text-xs text-amber-800">
+              <span className="font-semibold">Viewing a sample plan.</span>
+              <span className="hidden sm:inline"> Explore the features, then create your own plan to save and customize.</span>
+            </p>
+            <button onClick={startCustomPlan} className="text-xs font-medium text-amber-900 underline hover:text-amber-700 whitespace-nowrap">
+              Create your own plan →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {needsOnboarding ? (
+        <OnboardingFlow
+          inputs={inputs}
+          setInputs={setInputs}
+          setInput={setInput}
+          plaidAccounts={plaidAccounts}
+          usePlaid={usePlaid}
+          derivedAge={derivedAge}
+          derivedSpouseAge={derivedSpouseAge}
+          onSkipOnboarding={() => setSkipOnboarding(true)}
+          onLoadDemo={() => { router.push('/calculator?demo=true') }}
+        />
+      ) : showComparison && scenarios.length >= 2 ? (
         <ComparisonView
           comparisonData={comparisonData}
           scenarios={scenarios}
@@ -1425,6 +1522,191 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
               <button onClick={confirmSwitchCancel} className="text-slate-500 hover:text-slate-700 text-sm font-medium px-3 py-2">Cancel</button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, derivedAge, derivedSpouseAge, onSkipOnboarding, onLoadDemo }) {
+  const hasBirthDate = !!inputs.birthDate
+  const hasAccounts = inputs.accounts.length > 0
+  const initialStep = hasBirthDate ? 2 : 1
+  const [step, setStep] = useState(initialStep)
+  const [step1Error, setStep1Error] = useState(null)
+
+  const canAdvanceFromStep1 =
+    inputs.birthDate &&
+    derivedAge >= 10 && derivedAge <= 110 &&
+    inputs.retirementAge > derivedAge &&
+    (!inputs.spouseEnabled || (inputs.spouseBirthDate && derivedSpouseAge >= 10 && inputs.spouseRetirementAge > derivedSpouseAge))
+
+  const advanceToStep2 = () => {
+    if (!canAdvanceFromStep1) {
+      if (!inputs.birthDate) setStep1Error('Enter your birth date to continue.')
+      else if (derivedAge < 10 || derivedAge > 110) setStep1Error('Birth date looks off — double check.')
+      else if (inputs.retirementAge <= derivedAge) setStep1Error('Retirement age must be after your current age.')
+      else if (inputs.spouseEnabled && !inputs.spouseBirthDate) setStep1Error("Enter your spouse's birth date.")
+      else if (inputs.spouseEnabled && inputs.spouseRetirementAge <= derivedSpouseAge) setStep1Error("Spouse's retirement age must be after their current age.")
+      return
+    }
+    setStep1Error(null)
+    if (plaidAccounts.length > 0 && inputs.accounts.length === 0) {
+      usePlaid()
+      return
+    }
+    setStep(2)
+  }
+
+  const [manualAccounts, setManualAccounts] = useState(hasAccounts ? [] : [{ id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
+  const updateManual = (id, patch) => setManualAccounts((p) => p.map((a) => a.id === id ? { ...a, ...patch } : a))
+  const removeManual = (id) => setManualAccounts((p) => p.filter((a) => a.id !== id))
+  const addManual = () => setManualAccounts((p) => [...p, { id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }])
+  const commitManual = () => {
+    const valid = manualAccounts.filter((a) => a.name.trim() && a.balance > 0)
+    if (valid.length === 0) return
+    setInputs((p) => ({ ...p, accounts: [...p.accounts, ...valid] }))
+  }
+
+  return (
+    <div className="max-w-[700px] mx-auto px-4 py-12 sm:py-20">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold text-slate-900">
+          {step === 1 ? "Let's plan your retirement" : 'Add your accounts'}
+        </h1>
+        <p className="text-base text-slate-500 mt-2 mb-8">
+          {step === 1
+            ? 'We need a few pieces of information to build your plan.'
+            : 'Tell us about the accounts that will fund your retirement.'}
+        </p>
+        <p className="text-xs text-slate-400 uppercase tracking-wider mb-6">
+          Step {step} of 2: {step === 1 ? 'Tell us about you' : 'Your accounts and savings'}
+        </p>
+      </div>
+
+      {step === 1 ? (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
+          <div>
+            <p className="text-xs text-slate-600 mb-2">Planning for</p>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setInput('spouseEnabled', false)} className={`flex-1 rounded-lg border p-3 text-sm font-medium transition-colors ${!inputs.spouseEnabled ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>Just me</button>
+              <button type="button" onClick={() => setInput('spouseEnabled', true)} className={`flex-1 rounded-lg border p-3 text-sm font-medium transition-colors ${inputs.spouseEnabled ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>Me and my spouse</button>
+            </div>
+          </div>
+
+          <label className="block text-xs text-slate-600">
+            <span className="block mb-1">Your birth date</span>
+            <input type="date" value={inputs.birthDate} onChange={(e) => setInput('birthDate', e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+            {inputs.birthDate && <span className="text-[10px] text-slate-500 mt-1 block">Age {derivedAge}</span>}
+          </label>
+
+          <label className="block text-xs text-slate-600">
+            <span className="block mb-1">When do you want to retire?</span>
+            <input type="number" min={40} max={90} value={inputs.retirementAge} onChange={(e) => setInput('retirementAge', parseFloat(e.target.value) || 0)}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+          </label>
+
+          {inputs.spouseEnabled && (
+            <>
+              <label className="block text-xs text-slate-600">
+                <span className="block mb-1">Spouse birth date</span>
+                <input type="date" value={inputs.spouseBirthDate || ''} onChange={(e) => setInput('spouseBirthDate', e.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+                {inputs.spouseBirthDate && <span className="text-[10px] text-slate-500 mt-1 block">Age {derivedSpouseAge}</span>}
+              </label>
+              <label className="block text-xs text-slate-600">
+                <span className="block mb-1">Spouse retirement age</span>
+                <input type="number" min={40} max={90} value={inputs.spouseRetirementAge} onChange={(e) => setInput('spouseRetirementAge', parseFloat(e.target.value) || 0)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+              </label>
+            </>
+          )}
+
+          {step1Error && <p className="text-xs text-red-500">{step1Error}</p>}
+
+          <div className="flex justify-end pt-2">
+            <button type="button" onClick={advanceToStep2} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+              Continue →
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {plaidAccounts.length > 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+              <p className="text-sm font-semibold text-slate-900 mb-1">Use your connected accounts</p>
+              <p className="text-xs text-slate-500 mb-4">We found {plaidAccounts.length} account{plaidAccounts.length === 1 ? '' : 's'} linked via Plaid. Import them into your plan.</p>
+              <button type="button" onClick={usePlaid} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                Import Plaid accounts →
+              </button>
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+              <p className="text-sm font-semibold text-slate-900 mb-1">Connect with Plaid</p>
+              <p className="text-xs text-slate-500 mb-4">Automatically pull balances from your bank, brokerage, and retirement accounts.</p>
+              <Link href="/accounts/add" className="inline-block border border-blue-200 text-blue-600 hover:bg-blue-50 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                Connect with Plaid →
+              </Link>
+            </div>
+          )}
+
+          <div className="text-center text-xs text-slate-400 uppercase tracking-wider">or</div>
+
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+            <p className="text-sm font-semibold text-slate-900 mb-1">Enter accounts manually</p>
+            <p className="text-xs text-slate-500 mb-4">Add the accounts that will fund your retirement. You can refine these later.</p>
+
+            <div className="space-y-2">
+              {manualAccounts.map((a) => (
+                <div key={a.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
+                  <div className="flex gap-1.5">
+                    <input type="text" placeholder="Account name" value={a.name} onChange={(e) => updateManual(a.id, { name: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                    <button type="button" onClick={() => removeManual(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
+                  </div>
+                  <div className="grid gap-1.5" style={{ gridTemplateColumns: '1.2fr 70px 90px' }}>
+                    <select value={a.type} onChange={(e) => updateManual(a.id, { type: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white min-w-0">
+                      {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    <select value={a.owner} onChange={(e) => updateManual(a.id, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
+                      {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <input type="text" inputMode="numeric" placeholder="$0" value={a.balance ? fmt(a.balance) : ''} onChange={(e) => updateManual(a.id, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button type="button" onClick={addManual} className="text-xs font-medium text-blue-600 hover:text-blue-700 mt-3">
+              + Add another account
+            </button>
+
+            <div className="flex justify-end mt-4">
+              <button type="button" onClick={commitManual} disabled={!manualAccounts.some((a) => a.name.trim() && a.balance > 0)} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+                Continue →
+              </button>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <button type="button" onClick={onLoadDemo} className="text-sm text-slate-500 underline hover:text-slate-700">
+              Use sample data to explore →
+            </button>
+          </div>
+
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={() => setStep(1)} className="text-xs text-slate-500 hover:text-slate-700">
+              ← Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 1 && (
+        <div className="text-center mt-6">
+          <button type="button" onClick={onSkipOnboarding} className="text-sm text-slate-500 underline hover:text-slate-700">
+            Have an existing plan? Skip setup and enter details manually →
+          </button>
         </div>
       )}
     </div>
