@@ -95,6 +95,10 @@ function migrateInputs(raw) {
     m.incomeSources = [...(m.incomeSources || []), ...converted]
     m.accounts = (m.accounts || []).filter((a) => a.type !== 'pension')
   }
+  m.accounts = (m.accounts || []).map((a) => ({
+    ...a,
+    linkedAccount: a.linkedAccount || null,
+  }))
   return m
 }
 
@@ -119,6 +123,58 @@ function estimateSSBenefit(annualIncome) {
   return Math.round(1174 * 0.9 + (7078 - 1174) * 0.32 + (Math.min(monthlyIncome, 14500) - 7078) * 0.15)
 }
 
+const FIELD_HELP = {
+  userMonthlySavings: 'Includes 401(k) contributions, IRA contributions, and any taxable investing.',
+  spouseMonthlySavings: "Includes 401(k) contributions, IRA contributions, and any taxable investing. Enter $0 if your spouse doesn't have a dedicated savings vehicle.",
+  retirementIncomeNeeded: "Gross pre-tax income you'll need annually in retirement, in today's dollars. A common rule of thumb is 70–80% of what you currently earn. Taxes are modeled separately and will appear in your plan results.",
+}
+
+function SSHelper({ annualIncome, currentAge, isSpouse }) {
+  const est = estimateSSBenefit(annualIncome || 0)
+  const showEstimate = (annualIncome || 0) > 0 && currentAge > 0 && est > 0
+  return (
+    <p className="text-xs text-slate-500 leading-relaxed mt-1">
+      {isSpouse ? 'Visit ssa.gov/myaccount for a personalized estimate.' : "Don't know your estimate? Visit ssa.gov/myaccount for a personalized number."}
+      {showEstimate && (isSpouse
+        ? <> Based on {fmt(annualIncome)} of annual income, a rough estimate would be around {fmt(est)}/month at age 67.</>
+        : <> As a rough estimate, someone currently earning {fmt(annualIncome)} at age {currentAge} might expect around {fmt(est)}/month at age 67.</>
+      )}
+      {' '}This estimate assumes roughly 30 years of work at similar earnings. Your actual benefit depends on your full earnings history.
+    </p>
+  )
+}
+
+function HelperText({ children }) {
+  return <p className="text-xs text-slate-500 leading-relaxed mt-1">{children}</p>
+}
+
+function timeAgo(isoString) {
+  if (!isoString) return 'never'
+  const t = new Date(isoString).getTime()
+  if (!isFinite(t)) return 'never'
+  const diff = Date.now() - t
+  if (diff < 0) return 'just now'
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+  if (days === 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days} days ago`
+  if (days < 30) return `${Math.floor(days / 7)} week${Math.floor(days / 7) === 1 ? '' : 's'} ago`
+  if (days < 365) return `${Math.floor(days / 30)} month${Math.floor(days / 30) === 1 ? '' : 's'} ago`
+  return `${Math.floor(days / 365)} year${Math.floor(days / 365) === 1 ? '' : 's'} ago`
+}
+
+function calcTypeToManualMeta(type) {
+  switch (type) {
+    case '401k': return { account_type: '401k', subtype: '401k', category: 'retirement' }
+    case 'traditional_ira': return { account_type: 'ira', subtype: 'ira', category: 'retirement' }
+    case 'roth_ira': return { account_type: 'roth_ira', subtype: 'roth_ira', category: 'retirement' }
+    case 'brokerage': return { account_type: 'brokerage', subtype: 'brokerage', category: 'investment' }
+    case 'cash': return { account_type: 'savings', subtype: 'savings', category: 'banking' }
+    case 'other_investment': return { account_type: 'other', subtype: 'other_investment', category: 'investment' }
+    default: return { account_type: 'other', subtype: 'other', category: 'other' }
+  }
+}
+
 const FIELD_TOOLTIPS = {
   retirementAge: 'The age you plan to stop working full-time. This is when your primary income stops and portfolio withdrawals begin.',
   spouseRetirementAge: 'The age your spouse plans to stop working full-time.',
@@ -138,6 +194,12 @@ const FIELD_TOOLTIPS = {
   inflationRate: 'Historical average is about 2.5–3%. The Fed targets 2%. Recent years have seen higher inflation — using a slightly higher rate (2.5–3%) builds in a safety margin.',
   retirementBalanceGoal: "The portion of your retirement-age balance you want remaining at life expectancy, as a percentage. Set to 0 if you don't have a specific target. Set to 100 if you want to preserve your full retirement principal (e.g., for inheritance). Set to 50 if you're comfortable drawing down half over your lifetime.",
   stateTaxRate: 'Your effective state income tax rate in retirement. Many retirees pay 0% (Florida, Texas, Tennessee, Nevada, Washington, Wyoming, South Dakota, New Hampshire, Alaska). Typical state tax rates range from 3–6%. California, New York, New Jersey, and a few others run higher.',
+  incomeSourceDescription: "A short name for this income source (e.g., 'Teacher's pension', 'Rental income', 'Part-time consulting').",
+  incomeSourceAmount: 'The amount paid to you each month. For pensions and annuities, use the stated benefit. For rental income, use expected net monthly income after expenses.',
+  incomeSourceStartAge: 'The age when this income begins. For a pension, this is usually your retirement age or a specific age specified in the plan.',
+  incomeSourceEndAge: 'The age when this income ends. Most pensions continue for life — set this to your life expectancy. Some income sources like part-time work may end earlier.',
+  incomeSourceDollarType: "Today's dollars means the amount will be inflated by the time it starts. Start-age dollars means the amount as stated at the time it begins — no inflation adjustment beforehand. Use 'Start-age' when your pension statement gives you a specific benefit amount.",
+  incomeSourceInflationAdjust: "Most pensions don't have cost-of-living adjustments. Social Security does. If unsure, check your pension documents — the difference over 30 years is significant.",
 }
 
 function makeDemoInputs() {
@@ -361,7 +423,7 @@ function runProjection(i, opts = {}) {
 
   let buckets = aggregateBuckets(accounts)
   const preData = [], ytr = retirementAge - currentAge
-  preData.push({ age: currentAge, contributions: 0, growth: 0, majorExpense: 0, balance: sumInvestable(buckets) + buckets.real_estate, investable: sumInvestable(buckets), earnedIncome: uInc + sInc, earnedIncomeByPerson: { self: uInc, spouse: sInc } })
+  preData.push({ age: currentAge, contributions: 0, growth: 0, majorExpense: 0, balance: sumInvestable(buckets) + buckets.real_estate, investable: sumInvestable(buckets), earnedIncome: uInc + sInc, earnedIncomeByPerson: { self: uInc, spouse: sInc }, bucketBalances: { pretax: buckets.pretax, roth: buckets.roth, brokerage: buckets.brokerage, cash: buckets.cash } })
 
   for (let y = 1; y <= ytr; y++) {
     const age = currentAge + y
@@ -381,7 +443,7 @@ function runProjection(i, opts = {}) {
     const inflFactor = Math.pow(1 + infl, y)
     const eiSelf = userStillEarning ? uInc * inflFactor : 0
     const eiSpouse = spouseStillEarning ? sInc * inflFactor : 0
-    preData.push({ age, contributions: c, growth, majorExpense: me, balance: sumInvestable(buckets) + buckets.real_estate, investable: sumInvestable(buckets), earnedIncome: eiSelf + eiSpouse, earnedIncomeByPerson: { self: eiSelf, spouse: eiSpouse } })
+    preData.push({ age, contributions: c, growth, majorExpense: me, balance: sumInvestable(buckets) + buckets.real_estate, investable: sumInvestable(buckets), earnedIncome: eiSelf + eiSpouse, earnedIncomeByPerson: { self: eiSelf, spouse: eiSpouse }, bucketBalances: { pretax: buckets.pretax, roth: buckets.roth, brokerage: buckets.brokerage, cash: buckets.cash } })
   }
 
   const postData = []
@@ -455,6 +517,7 @@ function runProjection(i, opts = {}) {
       stateTax: taxResult.state,
       effectiveTaxRate: taxResult.effectiveRate,
       netSpending: Math.max(0, need - taxResult.total),
+      bucketBalances: { pretax: buckets.pretax, roth: buckets.roth, brokerage: buckets.brokerage, cash: buckets.cash },
     })
   }
 
@@ -520,6 +583,9 @@ function buildCashFlowRows(results, inputs) {
       effectiveTaxRate: 0,
       grossWithdrawal: 0,
       netSpending: 0,
+      annualWithdrawal: 0,
+      bucketBalances: r.bucketBalances || { pretax: 0, roth: 0, brokerage: 0, cash: 0 },
+      withdrawalsByType: { brokerage: 0, cash: 0, pretax: 0, rmd: 0, roth: 0 },
     })
   }
 
@@ -533,6 +599,16 @@ function buildCashFlowRows(results, inputs) {
     const totalExpenses = r.withdrawalGross + r.majorExpense
     const totalOutflows = totalExpenses
     const netCashFlow = totalInflows - totalOutflows
+
+    const withdrawalsByType = { brokerage: 0, cash: 0, pretax: 0, rmd: 0, roth: 0 }
+    for (const s of r.seq || []) {
+      if (s.from === 'brokerage') withdrawalsByType.brokerage += s.amount
+      else if (s.from === 'cash') withdrawalsByType.cash += s.amount
+      else if (s.from === 'pretax') {
+        if (s.note === 'RMD') withdrawalsByType.rmd += s.amount
+        else withdrawalsByType.pretax += s.amount
+      } else if (s.from === 'roth') withdrawalsByType.roth += s.amount
+    }
 
     rows.push({
       year: baseYear + (age - currentAge),
@@ -561,6 +637,9 @@ function buildCashFlowRows(results, inputs) {
       effectiveTaxRate: r.effectiveTaxRate || 0,
       grossWithdrawal: r.grossWithdrawal || 0,
       netSpending: r.netSpending || 0,
+      annualWithdrawal: r.withdrawalGross || 0,
+      bucketBalances: r.bucketBalances || { pretax: 0, roth: 0, brokerage: 0, cash: 0 },
+      withdrawalsByType,
     })
   }
 
@@ -569,7 +648,7 @@ function buildCashFlowRows(results, inputs) {
 
 // ─── COMPONENT ────────────────────────────────────────────────
 
-export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: initialScenarios }) {
+export default function CalculatorClient({ userEmail, existingAccounts = [], scenarios: initialScenarios }) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const demoParam = searchParams?.get('demo') === 'true'
@@ -599,7 +678,7 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   const aboutRef = useRef(null)
   const newFormRef = useRef(null)
   const renameInputRef = useRef(null)
-  const [showBreakdown, setShowBreakdown] = useState(false)
+  const [showBreakdown, setShowBreakdown] = useState(true)
   const [showPreRetirement, setShowPreRetirement] = useState(false)
   const [showComparison, setShowComparison] = useState(false)
   const pdfRef = useRef(false)
@@ -677,18 +756,88 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   const derivedAge = ageFromBirthDate(inputs.birthDate)
   const derivedSpouseAge = ageFromBirthDate(inputs.spouseBirthDate)
 
-  const usePlaid = () => {
-    const accts = plaidAccounts.map((a) => ({
-      id: crypto.randomUUID(),
-      name: `${a.institution} ${a.name}${a.mask ? ` ··${a.mask}` : ''}`.trim(),
-      type: a.type, owner: 'self', balance: a.balance,
-    }))
+  const [syncStatus, setSyncStatus] = useState(null)
+
+  const buildLinkedFromExisting = (e) => ({
+    id: crypto.randomUUID(),
+    name: `${e.institution || ''} ${e.name}${e.mask ? ` ··${e.mask}` : ''}`.trim(),
+    type: e.type,
+    owner: e.owner || 'self',
+    balance: e.balance,
+    linkedAccount: {
+      source: e.source,
+      sourceId: e.sourceId,
+      sourceUpdatedAt: e.updatedAt || new Date().toISOString(),
+    },
+  })
+
+  // Wholesale import (used by onboarding's "Use existing accounts").
+  const importExistingAccounts = (selected = existingAccounts) => {
+    const accts = selected.map(buildLinkedFromExisting)
     setInputs((p) => ({ ...p, accounts: accts }))
   }
 
-  const addAccount = () => setInputs((p) => ({ ...p, accounts: [...p.accounts, { id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 }] }))
+  // Additive sync (used by sidebar button). Matches by sourceId; updates balance + sourceUpdatedAt
+  // for matched accounts; appends unmatched as new linked accounts; leaves freeform accounts alone.
+  const syncExistingAccounts = () => {
+    const byKey = new Map(existingAccounts.map((e) => [`${e.source}:${e.sourceId}`, e]))
+    const linkedKeys = new Set(
+      inputs.accounts
+        .filter((a) => a.linkedAccount)
+        .map((a) => `${a.linkedAccount.source}:${a.linkedAccount.sourceId}`)
+    )
+    let updated = 0
+    const next = inputs.accounts.map((a) => {
+      if (!a.linkedAccount) return a
+      const key = `${a.linkedAccount.source}:${a.linkedAccount.sourceId}`
+      const e = byKey.get(key)
+      if (!e) return a
+      updated += 1
+      return {
+        ...a,
+        balance: e.balance,
+        linkedAccount: { ...a.linkedAccount, sourceUpdatedAt: e.updatedAt || new Date().toISOString() },
+      }
+    })
+    const toAdd = existingAccounts
+      .filter((e) => !linkedKeys.has(`${e.source}:${e.sourceId}`))
+      .map(buildLinkedFromExisting)
+    setInputs((p) => ({ ...p, accounts: [...next, ...toAdd] }))
+    setSyncStatus({ updated, added: toAdd.length })
+    setTimeout(() => setSyncStatus(null), 4000)
+  }
+
+  const addAccount = () => setInputs((p) => ({ ...p, accounts: [...p.accounts, { id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0, linkedAccount: null, mirrorOnSave: true }] }))
   const updateAccount = (id, patch) => setInputs((p) => ({ ...p, accounts: p.accounts.map((a) => a.id === id ? { ...a, ...patch } : a) }))
   const removeAccount = (id) => setInputs((p) => ({ ...p, accounts: p.accounts.filter((a) => a.id !== id) }))
+
+  const [linkingAccountId, setLinkingAccountId] = useState(null)
+  const linkAccountTo = (accountId, existing) => {
+    const acct = inputs.accounts.find((a) => a.id === accountId)
+    if (!acct || !existing) return
+    const currentBal = Number(acct.balance) || 0
+    const newBal = Number(existing.balance) || 0
+    let useNewBalance = true
+    if (currentBal > 0 && Math.abs(currentBal - newBal) > Math.max(1000, currentBal * 0.05)) {
+      useNewBalance = window.confirm(`Linking will update the balance from ${fmt(currentBal)} to ${fmt(newBal)}. Continue?`)
+      if (useNewBalance === false) return
+    }
+    setInputs((p) => ({
+      ...p,
+      accounts: p.accounts.map((a) => a.id === accountId ? {
+        ...a,
+        balance: useNewBalance ? newBal : currentBal,
+        type: a.type === '401k' && existing.type ? existing.type : (a.type || existing.type),
+        linkedAccount: { source: existing.source, sourceId: existing.sourceId, sourceUpdatedAt: existing.updatedAt || new Date().toISOString() },
+        mirrorOnSave: false,
+      } : a),
+    }))
+    setLinkingAccountId(null)
+  }
+  const unlinkAccount = (accountId) => {
+    if (!window.confirm('Unlink this account? The current balance will stay; future syncs will skip it.')) return
+    setInputs((p) => ({ ...p, accounts: p.accounts.map((a) => a.id === accountId ? { ...a, linkedAccount: null } : a) }))
+  }
 
   const addIncomeSource = () => setInputs((p) => ({ ...p, incomeSources: [...p.incomeSources, { id: crypto.randomUUID(), description: 'Income', amount: 0, startAge: p.retirementAge, endAge: p.lifeExpectancy, dollarType: 'today', inflationAdjust: true }] }))
   const updateIncomeSource = (id, patch) => setInputs((p) => ({ ...p, incomeSources: p.incomeSources.map((s) => s.id === id ? { ...s, ...patch } : s) }))
@@ -712,9 +861,39 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     return { byBucket: b, investable: inv, netWorth: inv + b.real_estate, pretaxShare: inv > 0 ? b.pretax / inv : 0 }
   }, [inputs.accounts])
 
+  const existingByLinkKey = useMemo(() => {
+    const m = new Map()
+    for (const e of existingAccounts) m.set(`${e.source}:${e.sourceId}`, e)
+    return m
+  }, [existingAccounts])
+
+  const linkedAccountStatus = useMemo(() => {
+    const status = {}
+    for (const acct of inputs.accounts || []) {
+      if (!acct.linkedAccount?.sourceId) continue
+      const key = `${acct.linkedAccount.source}:${acct.linkedAccount.sourceId}`
+      const found = existingByLinkKey.get(key)
+      if (!found) {
+        status[acct.id] = { state: 'orphaned' }
+      } else {
+        const stale = found.updatedAt && acct.linkedAccount.sourceUpdatedAt && new Date(found.updatedAt).getTime() > new Date(acct.linkedAccount.sourceUpdatedAt).getTime()
+        status[acct.id] = { state: 'live', stale, source: found }
+      }
+    }
+    return status
+  }, [inputs.accounts, existingByLinkKey])
+
+  const linkedSourceKeysInUse = useMemo(() => {
+    const s = new Set()
+    for (const a of inputs.accounts || []) {
+      if (a.linkedAccount?.sourceId) s.add(`${a.linkedAccount.source}:${a.linkedAccount.sourceId}`)
+    }
+    return s
+  }, [inputs.accounts])
+
   const taxSummary = useMemo(() => {
     if (!results || !results.postData || results.postData.length === 0) {
-      return { totalLifetimeTaxes: 0, avgEffectiveRate: 0, firstYearTaxes: 0, firstYearNetSpending: 0 }
+      return { totalLifetimeTaxes: 0, avgEffectiveRate: 0, firstYearTaxes: 0, firstYearNetSpending: 0, firstYearNetSpendingMonthly: 0 }
     }
     const infl = (inputs.inflationRate || 0) / 100
     let totalToday = 0, rateSum = 0, n = 0
@@ -728,13 +907,20 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     const first = results.postData[0]
     const firstYtd = first.age - derivedAge
     const firstDeflator = Math.pow(1 + infl, firstYtd)
+    const grossToday = (inputs.retirementIncomeNeeded || 0)
+    let netAnnual = (first.netSpending || 0) / firstDeflator
+    if (netAnnual > grossToday && grossToday > 0) {
+      if (typeof console !== 'undefined') console.warn('Net spending exceeded gross; capping at gross.')
+      netAnnual = grossToday
+    }
     return {
       totalLifetimeTaxes: totalToday,
       avgEffectiveRate: n > 0 ? rateSum / n : 0,
       firstYearTaxes: (first.taxes || 0) / firstDeflator,
-      firstYearNetSpending: (first.netSpending || 0) / firstDeflator,
+      firstYearNetSpending: netAnnual,
+      firstYearNetSpendingMonthly: netAnnual / 12,
     }
-  }, [results, inputs.inflationRate, derivedAge])
+  }, [results, inputs.inflationRate, derivedAge, inputs.retirementIncomeNeeded])
 
   const advisorPrompts = useMemo(() => {
     const p = []
@@ -759,6 +945,39 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     })
   }, [results, inputs.showFutureDollars, inputs.inflationRate, derivedAge])
 
+  const compositionChart = useMemo(() => {
+    if (!results) return []
+    const infl = inputs.inflationRate / 100
+    const d = (v, age) => inputs.showFutureDollars ? v : v / Math.pow(1 + infl, age - derivedAge)
+    return [...results.preData, ...results.postData].map((r) => {
+      const bb = r.bucketBalances || { pretax: 0, roth: 0, brokerage: 0, cash: 0 }
+      return {
+        age: r.age,
+        pretax: d(bb.pretax || 0, r.age),
+        roth: d(bb.roth || 0, r.age),
+        brokerage: d(bb.brokerage || 0, r.age),
+        cash: d(bb.cash || 0, r.age),
+      }
+    })
+  }, [results, inputs.showFutureDollars, inputs.inflationRate, derivedAge])
+
+  const cashFlowChart = useMemo(() => {
+    if (!results) return []
+    const infl = inputs.inflationRate / 100
+    const d = (v, age) => inputs.showFutureDollars ? v : v / Math.pow(1 + infl, age - derivedAge)
+    return results.postData.map((r) => {
+      const incomeFlows = (r.ssIncome || 0) + (r.otherIncome || 0)
+      const plannedDistributions = (r.seq || []).filter((s) => s.note === 'RMD').reduce((sum, s) => sum + s.amount, 0)
+      const totalInflows = incomeFlows + plannedDistributions
+      const totalOutflows = (r.withdrawalGross || 0) + (r.majorExpense || 0)
+      return {
+        age: r.age,
+        totalInflows: d(totalInflows, r.age),
+        totalOutflows: d(totalOutflows, r.age),
+      }
+    })
+  }, [results, inputs.showFutureDollars, inputs.inflationRate, derivedAge])
+
   const incomeChart = useMemo(() => {
     if (!results) return { data: [], series: [] }
     const allRows = buildCashFlowRows(results, inputs)
@@ -766,7 +985,7 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     const infl = inputs.inflationRate / 100
     const d = (v, age) => inputs.showFutureDollars ? v : v / Math.pow(1 + infl, age - derivedAge)
 
-    const otherPalette = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
+    const otherPalette = ['#f59e0b', '#ec4899', '#eab308', '#f97316', '#06b6d4']
     const allOtherIds = new Set()
     const otherMeta = {}
     for (const r of rows) {
@@ -782,12 +1001,18 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     otherIds.forEach((id, i) => { otherColors[id] = otherPalette[i % otherPalette.length] })
 
     const data = rows.map((r) => {
+      const wbt = r.withdrawalsByType || { brokerage: 0, cash: 0, pretax: 0, rmd: 0, roth: 0 }
       const obj = {
         age: r.age,
         earnedSelf: d(r.earnedIncomeSelf || 0, r.age),
         earnedSpouse: d(r.earnedIncomeSpouse || 0, r.age),
         ssSelf: d(r.ssIncomeSelf || 0, r.age),
         ssSpouse: d(r.ssIncomeSpouse || 0, r.age),
+        withdrawalCash: d(wbt.cash || 0, r.age),
+        withdrawalBrokerage: d(wbt.brokerage || 0, r.age),
+        withdrawalPretax: d(wbt.pretax || 0, r.age),
+        withdrawalRMD: d(wbt.rmd || 0, r.age),
+        withdrawalRoth: d(wbt.roth || 0, r.age),
         totalExpenses: r.phase === 'retirement' ? d(r.totalExpenses, r.age) : null,
       }
       for (const id of otherIds) obj[`other_${id}`] = 0
@@ -798,18 +1023,27 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     })
 
     const totalsBy = {}
-    const keys = ['earnedSelf', 'earnedSpouse', 'ssSelf', 'ssSpouse', ...otherIds.map((id) => `other_${id}`)]
+    const keys = [
+      'earnedSelf', 'earnedSpouse', 'ssSelf', 'ssSpouse',
+      ...otherIds.map((id) => `other_${id}`),
+      'withdrawalCash', 'withdrawalBrokerage', 'withdrawalPretax', 'withdrawalRMD', 'withdrawalRoth',
+    ]
     for (const k of keys) totalsBy[k] = 0
     for (const row of data) { for (const k of keys) totalsBy[k] += row[k] || 0 }
 
     const series = []
-    if (totalsBy.earnedSelf > 0) series.push({ key: 'earnedSelf', label: 'Earned income (you)', color: '#3b82f6' })
-    if (totalsBy.earnedSpouse > 0) series.push({ key: 'earnedSpouse', label: 'Earned income (spouse)', color: '#60a5fa' })
-    if (totalsBy.ssSelf > 0) series.push({ key: 'ssSelf', label: 'Social Security (you)', color: '#10b981' })
-    if (totalsBy.ssSpouse > 0) series.push({ key: 'ssSpouse', label: 'Social Security (spouse)', color: '#34d399' })
+    if (totalsBy.earnedSelf > 0) series.push({ key: 'earnedSelf', label: 'Earned income (you)', color: '#3b82f6', group: 'guaranteed' })
+    if (totalsBy.earnedSpouse > 0) series.push({ key: 'earnedSpouse', label: 'Earned income (spouse)', color: '#60a5fa', group: 'guaranteed' })
+    if (totalsBy.ssSelf > 0) series.push({ key: 'ssSelf', label: 'Social Security (you)', color: '#10b981', group: 'guaranteed' })
+    if (totalsBy.ssSpouse > 0) series.push({ key: 'ssSpouse', label: 'Social Security (spouse)', color: '#34d399', group: 'guaranteed' })
     for (const id of otherIds) {
-      if (totalsBy[`other_${id}`] > 0) series.push({ key: `other_${id}`, label: otherMeta[id], color: otherColors[id] })
+      if (totalsBy[`other_${id}`] > 0) series.push({ key: `other_${id}`, label: otherMeta[id], color: otherColors[id], group: 'guaranteed' })
     }
+    if (totalsBy.withdrawalBrokerage > 0) series.push({ key: 'withdrawalBrokerage', label: 'Investment withdrawal', color: '#c4b5fd', group: 'withdrawal' })
+    if (totalsBy.withdrawalCash > 0) series.push({ key: 'withdrawalCash', label: 'Cash withdrawal', color: '#a78bfa', group: 'withdrawal' })
+    if (totalsBy.withdrawalRoth > 0) series.push({ key: 'withdrawalRoth', label: 'Roth withdrawal', color: '#8b5cf6', group: 'withdrawal' })
+    if (totalsBy.withdrawalPretax > 0) series.push({ key: 'withdrawalPretax', label: 'Pre-tax withdrawal', color: '#7c3aed', group: 'withdrawal' })
+    if (totalsBy.withdrawalRMD > 0) series.push({ key: 'withdrawalRMD', label: 'Required distribution (RMD)', color: '#5b21b6', group: 'withdrawal' })
 
     return { data, series }
   }, [results, inputs, showPreRetirement])
@@ -832,17 +1066,47 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
   const saveScenario = useCallback(async () => {
     setSaveState('saving')
     try {
+      // Mirror any pending accounts to manual_accounts before persisting the scenario,
+      // so the saved scenario already carries the linkedAccount references.
+      let workingInputs = inputs
+      const pending = inputs.accounts.filter((a) => a.mirrorOnSave && !a.linkedAccount && (a.balance || 0) > 0 && a.name?.trim())
+      if (pending.length > 0) {
+        const mirrors = await Promise.all(pending.map(async (a) => {
+          const meta = calcTypeToManualMeta(a.type)
+          const res = await fetch('/api/accounts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: a.name, account_type: meta.account_type, balance: a.balance, institution_name: null }),
+          })
+          if (!res.ok) return { id: a.id, ok: false }
+          const { id, updated_at } = await res.json()
+          return { id: a.id, ok: true, sourceId: id, sourceUpdatedAt: updated_at || new Date().toISOString() }
+        }))
+        workingInputs = {
+          ...inputs,
+          accounts: inputs.accounts.map((a) => {
+            const m = mirrors.find((x) => x.id === a.id)
+            if (!m || !m.ok) return a
+            return {
+              ...a,
+              mirrorOnSave: false,
+              linkedAccount: { source: 'manual', sourceId: m.sourceId, sourceUpdatedAt: m.sourceUpdatedAt },
+            }
+          }),
+        }
+        setInputs(workingInputs)
+      }
+
       if (activeId) {
         const res = await fetch('/api/scenarios', {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: activeId, inputs, results: results ? { retirementBalance: results.retirementBalance, finalBalance: results.finalBalance, runOutAge: results.runOutAge, monte } : null }),
+          body: JSON.stringify({ id: activeId, inputs: workingInputs, results: results ? { retirementBalance: results.retirementBalance, finalBalance: results.finalBalance, runOutAge: results.runOutAge, monte } : null }),
         })
         if (!res.ok) throw new Error()
-        setScenarios((prev) => prev.map((s) => s.id === activeId ? { ...s, inputs, updated_at: new Date().toISOString() } : s))
+        setScenarios((prev) => prev.map((s) => s.id === activeId ? { ...s, inputs: workingInputs, updated_at: new Date().toISOString() } : s))
       } else {
         const res = await fetch('/api/scenarios', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'Base plan', inputs, is_base: true }),
+          body: JSON.stringify({ name: 'Base plan', inputs: workingInputs, is_base: true }),
         })
         if (!res.ok) throw new Error()
         const { scenario } = await res.json()
@@ -932,18 +1196,46 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
     } catch { alert('Failed to delete scenario') }
   }, [activeId, scenarios])
 
-  const downloadPdf = async () => {
-    if (!window.jspdf?.jsPDF) { alert('PDF library loading — try again.'); return }
-    const { jsPDF } = window.jspdf; const doc = new jsPDF(); let y = 10
-    const txt = (t, x, yy) => { const l = doc.splitTextToSize(t, 190); doc.text(l, x, yy); return yy + l.length * 6 }
-    doc.setFontSize(16); doc.setTextColor(59, 130, 246); y = txt('Glide Retirement Plan', 10, y); y += 4
-    doc.setFontSize(10); doc.setTextColor(30, 41, 59)
-    y = txt(`Age ${derivedAge} → Retire ${inputs.retirementAge} → Life ${inputs.lifeExpectancy}`, 14, y)
-    y = txt(`Income needed: ${fmt(inputs.retirementIncomeNeeded)} | Pre-ret return: ${inputs.preRetirementReturn}% | Post-ret: ${inputs.postRetirementReturn}%`, 14, y)
-    if (monte) y = txt(`Monte Carlo: ${Math.round(monte.probability * 100)}% success (${monte.runs} sims)`, 14, y)
-    if (results) { y = txt(`Balance at retirement: ${fmt(results.retirementBalance)}`, 14, y); y = txt(`Balance at ${inputs.lifeExpectancy}: ${fmt(results.finalBalance)}`, 14, y) }
-    doc.save('glide-retirement-plan.pdf')
-  }
+  const [pdfState, setPdfState] = useState('idle')
+  const downloadPdf = useCallback(async () => {
+    if (!results || !valid) return
+    if (!window.jspdf?.jsPDF) { setPdfState('error'); setTimeout(() => setPdfState('idle'), 2000); return }
+    setPdfState('generating')
+    try {
+      const { generatePdf } = await import('./pdfGenerator')
+      await generatePdf({
+        userEmail,
+        scenarioName: activeScenario?.name || 'Base plan',
+        inputs,
+        results,
+        monte,
+        taxSummary,
+        advisorPrompts,
+        derivedAge,
+        derivedSpouseAge,
+        totals,
+        netSpending: {
+          firstYearNetSpending: taxSummary.firstYearNetSpending,
+          firstYearNetSpendingMonthly: taxSummary.firstYearNetSpendingMonthly,
+          firstYearTaxes: taxSummary.firstYearTaxes,
+        },
+        cashFlowRows: buildCashFlowRows(results, inputs),
+      })
+      setPdfState('done')
+      setTimeout(() => setPdfState('idle'), 2500)
+    } catch (e) {
+      console.error('PDF export failed', e)
+      setPdfState('error')
+      setTimeout(() => setPdfState('idle'), 3000)
+    }
+  }, [userEmail, activeScenario, inputs, results, monte, taxSummary, advisorPrompts, derivedAge, derivedSpouseAge, totals, valid])
+
+  const pdfLabel =
+    pdfState === 'generating' ? 'Preparing your plan…' :
+    pdfState === 'done' ? 'PDF downloaded' :
+    pdfState === 'error' ? 'Download failed — try again' :
+    'Download PDF'
+  const pdfDisabled = pdfState === 'generating' || !valid || !results
 
   const handleSignOut = useCallback(async () => {
     const { createClient } = await import('../../lib/supabase')
@@ -1051,6 +1343,14 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                   {isDirty && saveState === 'idle' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400" />}
                   {saveLabel}
                 </button>
+                <button
+                  onClick={downloadPdf}
+                  disabled={pdfDisabled}
+                  title={pdfLabel}
+                  className={`text-xs font-medium rounded-md px-3 py-1.5 transition-colors flex-shrink-0 border ${pdfDisabled && pdfState !== 'generating' ? 'text-slate-300 border-slate-200 bg-white cursor-not-allowed' : pdfState === 'generating' ? 'text-slate-500 border-slate-200 bg-slate-100 cursor-wait' : pdfState === 'done' ? 'text-emerald-700 border-emerald-200 bg-emerald-50' : pdfState === 'error' ? 'text-red-700 border-red-200 bg-red-50' : 'text-slate-600 border-slate-200 bg-white hover:bg-slate-50'}`}
+                >
+                  {pdfState === 'generating' ? 'Preparing…' : pdfState === 'done' ? 'Downloaded ✓' : pdfState === 'error' ? 'Failed' : 'PDF'}
+                </button>
               </div>
             </div>
             {scenarios.length <= 1 && !renaming && (
@@ -1145,11 +1445,13 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
           inputs={inputs}
           setInputs={setInputs}
           setInput={setInput}
-          plaidAccounts={plaidAccounts}
-          usePlaid={usePlaid}
+          existingAccounts={existingAccounts}
+          importExistingAccounts={importExistingAccounts}
           derivedAge={derivedAge}
           derivedSpouseAge={derivedSpouseAge}
           onLoadDemo={() => { router.push('/calculator?demo=true') }}
+          taxSummary={taxSummary}
+          planValid={valid}
         />
       ) : showComparison && scenarios.length >= 2 ? (
         <ComparisonView
@@ -1193,7 +1495,7 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 <SummaryRow label="Accounts" value={`${inputs.accounts.length} (${fmt(totals.investable)})`} />
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button onClick={downloadPdf} className="text-xs font-medium text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-md px-2.5 py-1.5">Download PDF</button>
+                <button onClick={downloadPdf} disabled={pdfDisabled} className={`text-xs font-medium rounded-md px-2.5 py-1.5 transition-colors ${pdfDisabled && pdfState !== 'generating' ? 'text-slate-300 bg-slate-50 cursor-not-allowed' : pdfState === 'generating' ? 'text-slate-500 bg-slate-100 cursor-wait' : pdfState === 'done' ? 'text-emerald-700 bg-emerald-50' : pdfState === 'error' ? 'text-red-700 bg-red-50' : 'text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100'}`}>{pdfLabel}</button>
               </div>
             </div>
           ) : (
@@ -1202,12 +1504,31 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 <button onClick={() => setEditing(false)} className="text-xs font-medium text-blue-600 hover:text-blue-700 mb-2">← Back to results</button>
               )}
 
-              {plaidAccounts.length > 0 && inputs.accounts.length === 0 && (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                  <p className="text-sm text-blue-800 font-medium mb-2">Use your connected accounts?</p>
-                  <button onClick={usePlaid} className="text-xs font-medium bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600">Pre-fill from Plaid</button>
-                </div>
-              )}
+              {existingAccounts.length > 0 && (() => {
+                const hasLinked = inputs.accounts.some((a) => a.linkedAccount)
+                const empty = inputs.accounts.length === 0
+                return (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                    <p className="text-sm text-blue-800 font-medium mb-1">{empty ? 'Use your existing accounts?' : (hasLinked ? 'Sync linked accounts' : 'Pre-fill from existing accounts')}</p>
+                    <p className="text-xs text-blue-700/80 mb-2">
+                      {empty
+                        ? `${existingAccounts.length} account${existingAccounts.length === 1 ? '' : 's'} from your dashboard ready to import.`
+                        : hasLinked
+                        ? 'Update linked balances and add any new accounts from your dashboard.'
+                        : 'Link your dashboard accounts to this plan.'}
+                    </p>
+                    <button onClick={empty ? () => importExistingAccounts() : syncExistingAccounts} className="text-xs font-medium bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600">
+                      {empty ? 'Import accounts' : (hasLinked ? 'Sync linked accounts' : 'Pre-fill from existing')}
+                    </button>
+                    {syncStatus && (
+                      <p className="text-xs text-emerald-700 mt-2">
+                        Updated {syncStatus.updated} linked account{syncStatus.updated === 1 ? '' : 's'}
+                        {syncStatus.added > 0 ? `. Added ${syncStatus.added} new account${syncStatus.added === 1 ? '' : 's'}.` : '.'}
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
 
               <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
                 <h2 className="text-sm font-semibold text-slate-900 mb-3">Who are you planning for?</h2>
@@ -1235,16 +1556,33 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 <NF label="Your retirement age" value={inputs.retirementAge} min={40} max={90} onChange={(v) => setInput('retirementAge', v)} tooltip={FIELD_TOOLTIPS.retirementAge} />
                 {inputs.spouseEnabled && <NF label="Spouse retirement age" value={inputs.spouseRetirementAge} min={40} max={90} onChange={(v) => setInput('spouseRetirementAge', v)} tooltip={FIELD_TOOLTIPS.spouseRetirementAge} />}
                 <NF label={inputs.spouseEnabled ? 'Life expectancy (longest-lived)' : 'Life expectancy'} value={inputs.lifeExpectancy} min={50} max={120} onChange={(v) => setInput('lifeExpectancy', v)} tooltip={FIELD_TOOLTIPS.lifeExpectancy} />
-                <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} tooltip={FIELD_TOOLTIPS.retirementIncomeNeeded} />
+                <div>
+                  <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} />
+                  <HelperText>{FIELD_HELP.retirementIncomeNeeded}</HelperText>
+                  {valid && taxSummary.firstYearNetSpending > 0 && (
+                    <p className="text-xs text-slate-600 leading-relaxed mt-1">
+                      Your take-home spending: ~<span className="font-medium text-slate-800">{fmt(taxSummary.firstYearNetSpendingMonthly)}/month</span> (<span className="font-medium text-slate-800">{fmt(taxSummary.firstYearNetSpending)}/year</span>) in today&apos;s dollars
+                    </p>
+                  )}
+                </div>
                 <p className="text-xs text-slate-500 mt-2">All amounts in today&apos;s dollars.</p>
                 {inputs.spouseEnabled ? <>
                   <MF label="Your annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
-                  <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
+                  <div>
+                    <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} />
+                    <HelperText>{FIELD_HELP.userMonthlySavings}</HelperText>
+                  </div>
                   <MF label="Spouse annual income" value={inputs.spouseAnnualIncome} onChange={(v) => setInput('spouseAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.spouseAnnualIncome} />
-                  <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.spouseMonthlySavings} />
+                  <div>
+                    <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} />
+                    <HelperText>{FIELD_HELP.spouseMonthlySavings}</HelperText>
+                  </div>
                 </> : <>
                   <MF label="Annual income" value={inputs.userAnnualIncome} onChange={(v) => setInput('userAnnualIncome', v)} tooltip={FIELD_TOOLTIPS.userAnnualIncome} />
-                  <MF label="Monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} tooltip={FIELD_TOOLTIPS.userMonthlySavings} />
+                  <div>
+                    <MF label="Monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} />
+                    <HelperText>{FIELD_HELP.userMonthlySavings}</HelperText>
+                  </div>
                 </>}
                 <Tog label="Increase savings yearly" checked={inputs.increaseSavings} onChange={(v) => setInput('increaseSavings', v)} tooltip={FIELD_TOOLTIPS.increaseSavings} />
                 {inputs.increaseSavings && <NF label="Annual increase (%)" value={inputs.savingsIncreaseRate} min={0} max={20} step={0.5} onChange={(v) => setInput('savingsIncreaseRate', v)} />}
@@ -1267,11 +1605,28 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                         <span className="text-[10px] text-slate-400">Tracked in net worth only</span>
                       </div>
                     </div>
-                  ) : (
+                  ) : (() => {
+                    const status = linkedAccountStatus[a.id]
+                    const orphaned = status?.state === 'orphaned'
+                    const stale = status?.stale
+                    const eligibleExisting = existingAccounts.filter((e) => !linkedSourceKeysInUse.has(`${e.source}:${e.sourceId}`))
+                    return (
                     <div key={a.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
-                      <div className="flex gap-1.5">
+                      <div className="flex gap-1.5 items-center">
                         <input type="text" placeholder="Account name" value={a.name} onChange={(e) => updateAccount(a.id, { name: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                        <button onClick={() => removeAccount(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
+                        {a.linkedAccount && !orphaned && (
+                          <span title={`Linked to your ${a.linkedAccount.source === 'plaid' ? 'Plaid' : 'net worth dashboard'} account. Updates here propagate.`} className="flex items-center gap-0.5 text-emerald-600 text-[10px] font-medium flex-shrink-0">
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            Linked
+                          </span>
+                        )}
+                        {orphaned && (
+                          <span title="The source account no longer exists." className="flex items-center gap-0.5 text-red-600 text-[10px] font-medium flex-shrink-0">
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-3l-6.93-12a2 2 0 00-3.48 0l-6.93 12a2 2 0 001.74 3z" /></svg>
+                            Source removed
+                          </span>
+                        )}
+                        <button onClick={() => removeAccount(a.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm flex-shrink-0">×</button>
                       </div>
                       <div className="grid gap-1.5" style={{ gridTemplateColumns: '1.2fr 70px 90px' }}>
                         <select value={a.type} onChange={(e) => updateAccount(a.id, { type: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white min-w-0">
@@ -1282,8 +1637,69 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                         </select>
                         <input type="text" inputMode="numeric" placeholder="$0" value={a.balance ? fmt(a.balance) : ''} onChange={(e) => updateAccount(a.id, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
                       </div>
+
+                      {a.linkedAccount && !orphaned && (
+                        <div className="flex items-center justify-between text-[10px] text-slate-400">
+                          <span>
+                            Last synced: {timeAgo(a.linkedAccount.sourceUpdatedAt)}
+                            {stale && <span className="text-amber-600"> · Updated since</span>}
+                          </span>
+                          <button onClick={() => unlinkAccount(a.id)} className="text-slate-500 hover:text-slate-700 underline">Unlink</button>
+                        </div>
+                      )}
+
+                      {orphaned && (
+                        <div className="flex items-center gap-2 text-[10px] text-red-600">
+                          <span>Original source removed — using last known balance.</span>
+                          {eligibleExisting.length > 0 && (
+                            <button onClick={() => setLinkingAccountId(linkingAccountId === a.id ? null : a.id)} className="text-blue-600 hover:text-blue-700 underline">Re-link</button>
+                          )}
+                          <button onClick={() => updateAccount(a.id, { linkedAccount: null })} className="text-slate-600 hover:text-slate-700 underline">Convert to freeform</button>
+                        </div>
+                      )}
+
+                      {!a.linkedAccount && (
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="flex items-center gap-2 text-[11px] text-slate-500 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!a.mirrorOnSave}
+                              onChange={(e) => updateAccount(a.id, { mirrorOnSave: e.target.checked })}
+                              className="rounded border-slate-300"
+                            />
+                            Also add to my net worth dashboard on save
+                          </label>
+                          {eligibleExisting.length > 0 && (
+                            <button onClick={() => setLinkingAccountId(linkingAccountId === a.id ? null : a.id)} className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap">
+                              Link to existing
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {linkingAccountId === a.id && eligibleExisting.length > 0 && (
+                        <div className="bg-slate-50 border border-slate-200 rounded p-2 space-y-1.5">
+                          <p className="text-[11px] text-slate-700">Link &ldquo;{a.name || 'this account'}&rdquo; to which existing account?</p>
+                          {eligibleExisting.map((e) => (
+                            <button
+                              key={`${e.source}:${e.sourceId}`}
+                              onClick={() => linkAccountTo(a.id, e)}
+                              className="w-full text-left flex items-center justify-between gap-2 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded px-2 py-1.5 text-[11px] transition-colors"
+                            >
+                              <span className="truncate">
+                                <span className="text-slate-900 font-medium">{e.name}</span>
+                                {e.institution && <span className="text-slate-500"> · {e.institution}</span>}
+                                <span className="text-slate-400"> · {e.source === 'plaid' ? 'Plaid' : 'Manual'}</span>
+                              </span>
+                              <span className="text-slate-700 tabular-nums whitespace-nowrap">{fmt(e.balance)}</span>
+                            </button>
+                          ))}
+                          <button onClick={() => setLinkingAccountId(null)} className="text-[10px] text-slate-500 hover:text-slate-700">Cancel</button>
+                        </div>
+                      )}
                     </div>
-                  )
+                    )
+                  })()
                 ))}
               </Section>
 
@@ -1292,10 +1708,16 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 <p className="text-xs text-slate-500 leading-relaxed mt-2">Social Security information below feeds into your plan automatically. Other income sources can be added and customized as needed.</p>
 
                 <h3 className="text-xs font-semibold text-slate-700 mt-4">Social Security</h3>
-                <MF label="Your monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAmount} />
+                <div>
+                  <MF label="Your projected monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} />
+                  <SSHelper annualIncome={inputs.userAnnualIncome} currentAge={derivedAge} />
+                </div>
                 <NF label="Your SS start age" value={inputs.socialSecurityAge} min={62} max={70} onChange={(v) => setInput('socialSecurityAge', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAge} />
                 {inputs.spouseEnabled && <>
-                  <MF label="Spouse monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} tooltip={FIELD_TOOLTIPS.spouseSSAmount} />
+                  <div>
+                    <MF label="Spouse's projected monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} />
+                    <SSHelper annualIncome={inputs.spouseAnnualIncome} currentAge={derivedSpouseAge} isSpouse />
+                  </div>
                   <NF label="Spouse SS start age" value={inputs.spouseSSAge} min={62} max={70} onChange={(v) => setInput('spouseSSAge', v)} tooltip={FIELD_TOOLTIPS.spouseSSAge} />
                 </>}
 
@@ -1305,24 +1727,36 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                   <button onClick={addIncomeSource} className="text-xs font-medium text-emerald-600">+ Add</button>
                 </div>
                 {inputs.incomeSources.map((s) => (
-                  <div key={s.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
-                    <div className="flex gap-1.5">
-                      <input type="text" value={s.description} onChange={(e) => updateIncomeSource(s.id, { description: e.target.value })} placeholder="Description" className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
-                      <button onClick={() => removeIncomeSource(s.id)} className="text-slate-400 hover:text-red-500 px-1">×</button>
+                  <div key={s.id} className="border border-slate-200 rounded-lg p-2 space-y-2 text-xs">
+                    <label className="block">
+                      <span className="flex items-center text-xs text-slate-600 mb-1">
+                        Description<InfoTip>{FIELD_TOOLTIPS.incomeSourceDescription}</InfoTip>
+                        <button onClick={() => removeIncomeSource(s.id)} className="ml-auto text-slate-400 hover:text-red-500 text-sm leading-none">×</button>
+                      </span>
+                      <input type="text" value={s.description} onChange={(e) => updateIncomeSource(s.id, { description: e.target.value })} placeholder="Description" className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                    </label>
+                    <label className="block">
+                      <span className="block text-xs text-slate-600 mb-1">Monthly amount<InfoTip>{FIELD_TOOLTIPS.incomeSourceAmount}</InfoTip></span>
+                      <input type="text" inputMode="numeric" placeholder="$/mo" value={s.amount ? fmt(s.amount) : ''} onChange={(e) => updateIncomeSource(s.id, { amount: parseMoney(e.target.value) })} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="block text-xs text-slate-600 mb-1">Start age<InfoTip>{FIELD_TOOLTIPS.incomeSourceStartAge}</InfoTip></span>
+                        <input type="number" value={s.startAge} onChange={(e) => updateIncomeSource(s.id, { startAge: parseInt(e.target.value) || 0 })} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                      </label>
+                      <label className="block">
+                        <span className="block text-xs text-slate-600 mb-1">End age<InfoTip>{FIELD_TOOLTIPS.incomeSourceEndAge}</InfoTip></span>
+                        <input type="number" value={s.endAge} onChange={(e) => updateIncomeSource(s.id, { endAge: parseInt(e.target.value) || 0 })} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                      </label>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      <input type="text" inputMode="numeric" placeholder="$/mo" value={s.amount ? fmt(s.amount) : ''} onChange={(e) => updateIncomeSource(s.id, { amount: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900" />
-                      <input type="number" placeholder="Start age" value={s.startAge} onChange={(e) => updateIncomeSource(s.id, { startAge: parseInt(e.target.value) || 0 })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900" />
-                      <input type="number" placeholder="End age" value={s.endAge} onChange={(e) => updateIncomeSource(s.id, { endAge: parseInt(e.target.value) || 0 })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900" />
-                    </div>
-                    <select value={s.dollarType} onChange={(e) => updateIncomeSource(s.id, { dollarType: e.target.value })} className="w-full border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
-                      <option value="today">Today&apos;s dollars</option>
-                      <option value="future">Start-age dollars</option>
-                    </select>
-                    <div className="flex items-center gap-2">
-                      <Tog label="Inflation-adjusted (COLA)" checked={s.inflationAdjust} onChange={(v) => updateIncomeSource(s.id, { inflationAdjust: v })} />
-                      <span className="text-[10px] text-slate-400">e.g. most Social Security, some pensions</span>
-                    </div>
+                    <label className="block">
+                      <span className="block text-xs text-slate-600 mb-1">Dollar type<InfoTip>{FIELD_TOOLTIPS.incomeSourceDollarType}</InfoTip></span>
+                      <select value={s.dollarType} onChange={(e) => updateIncomeSource(s.id, { dollarType: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900 bg-white">
+                        <option value="today">Today&apos;s dollars</option>
+                        <option value="future">Start-age dollars</option>
+                      </select>
+                    </label>
+                    <Tog label="Inflation-adjusted (COLA)" checked={s.inflationAdjust} onChange={(v) => updateIncomeSource(s.id, { inflationAdjust: v })} tooltip={FIELD_TOOLTIPS.incomeSourceInflationAdjust} />
                   </div>
                 ))}
               </Section>
@@ -1430,13 +1864,16 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 withdrawalRate={wrRate}
                 probPct={probPct}
                 firstYearNetSpending={taxSummary.firstYearNetSpending}
+                firstYearNetSpendingMonthly={taxSummary.firstYearNetSpendingMonthly}
+                firstYearTaxes={taxSummary.firstYearTaxes}
                 totalLifetimeTaxes={taxSummary.totalLifetimeTaxes}
               />
 
               {/* Key stats */}
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 <StatCard label="At retirement" value={fmt(dispBal(results.retirementBalance, ytr))} sub={`Age ${inputs.retirementAge}`} />
                 <StatCard label="At life expectancy" value={fmt(dispBal(results.finalBalance, inputs.lifeExpectancy - derivedAge))} sub={`Age ${inputs.lifeExpectancy}`} />
+                <StatCard label="Take-home spending" value={`${fmt(taxSummary.firstYearNetSpendingMonthly)}/mo`} sub={`Annual: ${fmt(taxSummary.firstYearNetSpending)} (today's $)`} />
                 <StatCard label="Sustainable income" value={fmt(dispBal(fourPct, ytr))} sub="4% rule (gross)" />
                 <StatCard label="Withdrawal rate" value={`${wrRate}%`} sub={Number(wrRate) > 5 ? 'Above safe threshold' : 'Within safe range'} warn={Number(wrRate) > 5} />
                 <StatCard label="Lifetime taxes (retirement)" value={fmt(taxSummary.totalLifetimeTaxes)} sub="Federal + state" />
@@ -1444,7 +1881,7 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
 
               {/* Portfolio projection chart */}
               {chartData.length > 1 && (
-                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+                <div id="pdf-chart-projection" className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <h3 className="text-sm font-semibold text-slate-900">Portfolio projection</h3>
@@ -1480,13 +1917,78 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                 </div>
               )}
 
-              {/* Income sources stacked bar chart */}
-              {incomeChart.data.length > 1 && incomeChart.series.length > 0 && (
-                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+              {/* Portfolio composition chart */}
+              {compositionChart.length > 1 && (
+                <div id="pdf-chart-composition" className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
                   <div className="flex items-center justify-between mb-4">
                     <div>
-                      <h3 className="text-sm font-semibold text-slate-900">Income sources</h3>
-                      <p className="text-xs text-slate-500">{showPreRetirement ? 'Full timeline' : 'Retirement years'}, {inputs.showFutureDollars ? 'future' : "today's"} dollars</p>
+                      <h3 className="text-sm font-semibold text-slate-900">Portfolio composition</h3>
+                      <p className="text-xs text-slate-500">How your accounts shift over time, {inputs.showFutureDollars ? 'future' : "today's"} dollars</p>
+                    </div>
+                  </div>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={compositionChart} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+                        <CartesianGrid stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="age" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                        <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={fmtCompact} width={55} />
+                        <Tooltip content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null
+                          const d = payload[0].payload
+                          const rows = [
+                            { label: 'Pretax', value: d.pretax, color: '#60a5fa' },
+                            { label: 'Roth', value: d.roth, color: '#10b981' },
+                            { label: 'Brokerage', value: d.brokerage, color: '#f59e0b' },
+                            { label: 'Cash', value: d.cash, color: '#6b7280' },
+                          ].filter((r) => Math.round(r.value) > 0)
+                          const total = rows.reduce((a, r) => a + r.value, 0)
+                          return (
+                            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg text-sm min-w-[200px]">
+                              <p className="text-slate-500 text-xs mb-1">Age {d.age}</p>
+                              {rows.map((r) => (
+                                <div key={r.label} className="flex justify-between gap-4 items-center">
+                                  <span className="flex items-center gap-1.5 text-slate-500 text-xs">
+                                    <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: r.color }} />
+                                    {r.label}
+                                  </span>
+                                  <span className="text-slate-900">{fmt(r.value)}</span>
+                                </div>
+                              ))}
+                              <div className="flex justify-between gap-4 border-t border-slate-100 mt-1 pt-1">
+                                <span className="text-slate-500 text-xs">Total</span>
+                                <span className="text-slate-900 font-semibold">{fmt(total)}</span>
+                              </div>
+                            </div>
+                          )
+                        }} />
+                        <Legend content={({ payload }) => (
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 justify-center">
+                            {(payload || []).map((entry) => (
+                              <span key={entry.value} className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                                <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: entry.color }} />
+                                {entry.value}
+                              </span>
+                            ))}
+                          </div>
+                        )} />
+                        <ReferenceLine x={inputs.retirementAge} stroke="#94a3b8" strokeDasharray="4 4" label={{ value: 'Retire', fill: '#94a3b8', fontSize: 10, position: 'top' }} />
+                        <Area type="monotone" dataKey="pretax" name="Pretax" stackId="1" stroke="#3b82f6" strokeWidth={1} fill="#60a5fa" />
+                        <Area type="monotone" dataKey="roth" name="Roth" stackId="1" stroke="#059669" strokeWidth={1} fill="#10b981" />
+                        <Area type="monotone" dataKey="brokerage" name="Brokerage" stackId="1" stroke="#d97706" strokeWidth={1} fill="#f59e0b" />
+                        <Area type="monotone" dataKey="cash" name="Cash" stackId="1" stroke="#4b5563" strokeWidth={1} fill="#6b7280" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+
+              {/* Retirement cash flow stacked bar chart */}
+              {incomeChart.data.length > 1 && incomeChart.series.length > 0 && (
+                <div id="pdf-chart-cashflow" className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">Retirement cash flow</h3>
+                      <p className="text-xs text-slate-500">How each year&apos;s spending is funded, {inputs.showFutureDollars ? 'future' : "today's"} dollars</p>
                     </div>
                     <div className="flex items-center gap-4">
                       <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
@@ -1495,7 +1997,7 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                       </label>
                     </div>
                   </div>
-                  <div className="h-56">
+                  <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <ComposedChart data={incomeChart.data} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
                         <CartesianGrid stroke="#f1f5f9" vertical={false} />
@@ -1525,6 +2027,65 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
                           <Bar key={s.key} dataKey={s.key} stackId="income" fill={s.color} name={s.label} />
                         ))}
                         <Line type="monotone" dataKey="totalExpenses" stroke="#1e293b" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#1e293b', stroke: '#fff', strokeWidth: 2 }} name="Total expenses" connectNulls={false} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+
+              {/* Inflows vs Outflows chart */}
+              {cashFlowChart.length > 1 && (
+                <div id="pdf-chart-inflows" className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">Inflows vs Outflows</h3>
+                      <p className="text-xs text-slate-500">Retirement years, {inputs.showFutureDollars ? 'future' : "today's"} dollars</p>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
+                      <input type="checkbox" checked={inputs.showFutureDollars} onChange={(e) => setInput('showFutureDollars', e.target.checked)} className="rounded border-slate-300" />
+                      Future dollars
+                    </label>
+                  </div>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={cashFlowChart} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+                        <CartesianGrid stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="age" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                        <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={fmtCompact} width={55} />
+                        <Tooltip content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null
+                          const d = payload[0].payload
+                          const gap = (d.totalOutflows || 0) - (d.totalInflows || 0)
+                          return (
+                            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg text-sm min-w-[200px]">
+                              <p className="text-slate-500 text-xs mb-1">Age {d.age}</p>
+                              <div className="flex justify-between gap-4 items-center">
+                                <span className="flex items-center gap-1.5 text-slate-500 text-xs"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: '#10b981' }} />Total inflows</span>
+                                <span className="text-slate-900">{fmt(d.totalInflows)}</span>
+                              </div>
+                              <div className="flex justify-between gap-4 items-center">
+                                <span className="flex items-center gap-1.5 text-slate-500 text-xs"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: '#ef4444' }} />Total outflows</span>
+                                <span className="text-slate-900">{fmt(d.totalOutflows)}</span>
+                              </div>
+                              <div className="flex justify-between gap-4 border-t border-slate-100 mt-1 pt-1">
+                                <span className="text-slate-500 text-xs">Gap</span>
+                                <span className={`font-semibold ${gap > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{gap > 0 ? '+' : ''}{fmt(gap)}</span>
+                              </div>
+                            </div>
+                          )
+                        }} />
+                        <Legend content={({ payload }) => (
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 justify-center">
+                            {(payload || []).map((entry) => (
+                              <span key={entry.value} className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                                <span className="inline-block w-4 h-0.5" style={{ backgroundColor: entry.color }} />
+                                {entry.value}
+                              </span>
+                            ))}
+                          </div>
+                        )} />
+                        <Line type="monotone" dataKey="totalInflows" name="Total Inflows" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }} />
+                        <Line type="monotone" dataKey="totalOutflows" name="Total Outflows" stroke="#ef4444" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#ef4444', stroke: '#fff', strokeWidth: 2 }} />
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
@@ -1565,7 +2126,7 @@ export default function CalculatorClient({ userEmail, plaidAccounts, scenarios: 
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 pb-6">
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <button onClick={() => setShowBreakdown(!showBreakdown)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50">
-              <span>Show year-by-year detail</span>
+              <span>{showBreakdown ? 'Hide year-by-year detail' : 'Show year-by-year detail'}</span>
               <svg className={`w-4 h-4 text-slate-400 transition-transform ${showBreakdown ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
             </button>
             {showBreakdown && (
@@ -1607,7 +2168,7 @@ function ProgressIndicator({ step, total }) {
   )
 }
 
-function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, derivedAge, derivedSpouseAge, onLoadDemo }) {
+function OnboardingFlow({ inputs, setInputs, setInput, existingAccounts, importExistingAccounts, derivedAge, derivedSpouseAge, onLoadDemo, taxSummary, planValid }) {
   const [step, setStep] = useState(1)
   const [stepError, setStepError] = useState(null)
 
@@ -1659,19 +2220,28 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
   }
   const removeIncomeSource = (id) => setInputs((p) => ({ ...p, incomeSources: (p.incomeSources || []).filter((s) => s.id !== id) }))
 
-  const [step4View, setStep4View] = useState('decide')
-  const [typeTotals, setTypeTotals] = useState(() =>
-    ACCOUNT_TYPES.map((t) => ({ type: t.value, label: t.label, balance: 0, owner: 'self' }))
-  )
-  const updateTypeTotal = (type, patch) => setTypeTotals((p) => p.map((t) => t.type === type ? { ...t, ...patch } : t))
-  const commitTypeTotals = () => {
-    const toAdd = typeTotals
-      .filter((t) => t.balance > 0)
-      .map((t) => ({ id: crypto.randomUUID(), name: t.label, type: t.type, owner: t.owner, balance: t.balance }))
-    if (toAdd.length === 0) return
+  const initialStep4View = existingAccounts.length > 0 ? 'existing' : 'decide'
+  const [step4View, setStep4View] = useState(initialStep4View)
+  const [chosen, setChosen] = useState(() => new Set(existingAccounts.map((e) => `${e.source}:${e.sourceId}`)))
+  const blankRow = () => ({ id: crypto.randomUUID(), name: '', type: '401k', owner: 'self', balance: 0 })
+  const [manualRows, setManualRows] = useState(() => [blankRow(), blankRow(), blankRow()])
+  const updateRow = (id, patch) => setManualRows((p) => p.map((r) => r.id === id ? { ...r, ...patch } : r))
+  const removeRow = (id) => setManualRows((p) => p.filter((r) => r.id !== id))
+  const addRow = () => setManualRows((p) => [...p, blankRow()])
+  const anyRowBalance = manualRows.some((r) => r.balance > 0)
+  const commitManualRows = () => {
+    const kept = manualRows.filter((r) => r.balance > 0)
+    if (kept.length === 0) return
+    const typeCounts = {}
+    const toAdd = kept.map((r) => {
+      const label = TYPE_META[r.type]?.label || 'Account'
+      if (r.name.trim()) return { id: crypto.randomUUID(), name: r.name.trim(), type: r.type, owner: r.owner, balance: r.balance }
+      typeCounts[r.type] = (typeCounts[r.type] || 0) + 1
+      const name = typeCounts[r.type] === 1 ? label : `${label} #${typeCounts[r.type]}`
+      return { id: crypto.randomUUID(), name, type: r.type, owner: r.owner, balance: r.balance }
+    })
     setInputs((p) => ({ ...p, accounts: [...p.accounts, ...toAdd] }))
   }
-  const anyTypeBalance = typeTotals.some((t) => t.balance > 0)
 
   const headings = {
     1: { title: 'Tell us about you', sub: 'We need a few pieces of information to build your plan.', caption: 'About you' },
@@ -1740,7 +2310,7 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
           </div>
           <div>
             <MF label="Your monthly savings" value={inputs.userMonthlySavings} onChange={(v) => setInput('userMonthlySavings', v)} />
-            <p className="text-xs text-slate-500 leading-relaxed mt-1">Includes 401(k) contributions, IRA contributions, and any taxable investing.</p>
+            <HelperText>{FIELD_HELP.userMonthlySavings}</HelperText>
           </div>
           {inputs.spouseEnabled && <>
             <div>
@@ -1748,7 +2318,7 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
             </div>
             <div>
               <MF label="Spouse monthly savings" value={inputs.spouseMonthlySavings} onChange={(v) => setInput('spouseMonthlySavings', v)} />
-              <p className="text-xs text-slate-500 leading-relaxed mt-1">Includes 401(k) contributions, IRA contributions, and any taxable investing. Enter $0 if your spouse doesn&apos;t have a dedicated savings vehicle.</p>
+              <HelperText>{FIELD_HELP.spouseMonthlySavings}</HelperText>
             </div>
           </>}
           <Tog label="Increase savings yearly" checked={inputs.increaseSavings} onChange={(v) => setInput('increaseSavings', v)} tooltip={FIELD_TOOLTIPS.increaseSavings} />
@@ -1771,31 +2341,24 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5">
           <div>
             <MF label={inputs.spouseEnabled ? 'Combined annual income needed' : 'Annual income needed'} value={inputs.retirementIncomeNeeded} onChange={(v) => setInput('retirementIncomeNeeded', v)} />
-            <p className="text-xs text-slate-500 leading-relaxed mt-1">Gross pre-tax income you&apos;ll need annually in retirement, in today&apos;s dollars. A common rule of thumb is 70–80% of what you currently earn. Taxes are modeled separately and will appear in your plan results.</p>
+            <HelperText>{FIELD_HELP.retirementIncomeNeeded}</HelperText>
+            {planValid && taxSummary && taxSummary.firstYearNetSpending > 0 && (
+              <p className="text-xs text-slate-600 leading-relaxed mt-1">
+                Your take-home spending: ~<span className="font-medium text-slate-800">{fmt(taxSummary.firstYearNetSpendingMonthly)}/month</span> (<span className="font-medium text-slate-800">{fmt(taxSummary.firstYearNetSpending)}/year</span>) in today&apos;s dollars
+              </p>
+            )}
           </div>
 
           <div>
             <MF label="Your projected monthly Social Security" value={inputs.socialSecurityAmount} onChange={(v) => setInput('socialSecurityAmount', v)} />
-            <p className="text-xs text-slate-500 leading-relaxed mt-1">
-              Don&apos;t know your estimate? Visit ssa.gov/myaccount for a personalized number.
-              {inputs.userAnnualIncome > 0 && derivedAge > 0 && estimateSSBenefit(inputs.userAnnualIncome) > 0 && (
-                <> As a rough estimate, someone currently earning {fmt(inputs.userAnnualIncome)} at age {derivedAge} might expect around {fmt(estimateSSBenefit(inputs.userAnnualIncome))}/month at age 67.</>
-              )}
-              {' '}This estimate assumes roughly 30 years of work at similar earnings. Your actual benefit depends on your full earnings history.
-            </p>
+            <SSHelper annualIncome={inputs.userAnnualIncome} currentAge={derivedAge} />
           </div>
           <NF label="Your SS start age" value={inputs.socialSecurityAge} min={62} max={70} onChange={(v) => setInput('socialSecurityAge', v)} tooltip={FIELD_TOOLTIPS.socialSecurityAge} />
 
           {inputs.spouseEnabled && <>
             <div>
               <MF label="Spouse's projected monthly Social Security" value={inputs.spouseSSAmount} onChange={(v) => setInput('spouseSSAmount', v)} />
-              <p className="text-xs text-slate-500 leading-relaxed mt-1">
-                Visit ssa.gov/myaccount for a personalized estimate.
-                {inputs.spouseAnnualIncome > 0 && estimateSSBenefit(inputs.spouseAnnualIncome) > 0 && (
-                  <> Based on {fmt(inputs.spouseAnnualIncome)} of annual income, a rough estimate would be around {fmt(estimateSSBenefit(inputs.spouseAnnualIncome))}/month at age 67.</>
-                )}
-                {' '}Actual benefits depend on full earnings history.
-              </p>
+              <SSHelper annualIncome={inputs.spouseAnnualIncome} currentAge={derivedSpouseAge} isSpouse />
             </div>
             <NF label="Spouse SS start age" value={inputs.spouseSSAge} min={62} max={70} onChange={(v) => setInput('spouseSSAge', v)} tooltip={FIELD_TOOLTIPS.spouseSSAge} />
           </>}
@@ -1829,31 +2392,31 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
             ) : (
               <div className="border border-slate-200 rounded-lg p-3 space-y-3 text-xs">
                 <label className="block">
-                  <span className="block text-xs text-slate-600 mb-1">Description</span>
+                  <span className="block text-xs text-slate-600 mb-1">Description<InfoTip>{FIELD_TOOLTIPS.incomeSourceDescription}</InfoTip></span>
                   <input type="text" placeholder="e.g., Teacher's pension" value={incomeForm.description} onChange={(e) => setIncomeForm((p) => ({ ...p, description: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
                 </label>
                 <label className="block">
-                  <span className="block text-xs text-slate-600 mb-1">Monthly amount</span>
+                  <span className="block text-xs text-slate-600 mb-1">Monthly amount<InfoTip>{FIELD_TOOLTIPS.incomeSourceAmount}</InfoTip></span>
                   <input type="text" inputMode="numeric" placeholder="$0" value={incomeForm.amount ? fmt(incomeForm.amount) : ''} onChange={(e) => setIncomeForm((p) => ({ ...p, amount: parseMoney(e.target.value) }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
-                    <span className="block text-xs text-slate-600 mb-1">Start age</span>
+                    <span className="block text-xs text-slate-600 mb-1">Start age<InfoTip>{FIELD_TOOLTIPS.incomeSourceStartAge}</InfoTip></span>
                     <input type="number" value={incomeForm.startAge} onChange={(e) => setIncomeForm((p) => ({ ...p, startAge: parseInt(e.target.value) || 0 }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
                   </label>
                   <label className="block">
-                    <span className="block text-xs text-slate-600 mb-1">End age</span>
+                    <span className="block text-xs text-slate-600 mb-1">End age<InfoTip>{FIELD_TOOLTIPS.incomeSourceEndAge}</InfoTip></span>
                     <input type="number" value={incomeForm.endAge} onChange={(e) => setIncomeForm((p) => ({ ...p, endAge: parseInt(e.target.value) || 0 }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
                   </label>
                 </div>
                 <label className="block">
-                  <span className="block text-xs text-slate-600 mb-1">Dollar type</span>
+                  <span className="block text-xs text-slate-600 mb-1">Dollar type<InfoTip>{FIELD_TOOLTIPS.incomeSourceDollarType}</InfoTip></span>
                   <select value={incomeForm.dollarType} onChange={(e) => setIncomeForm((p) => ({ ...p, dollarType: e.target.value }))} className="w-full border border-slate-200 rounded px-2 py-1.5 text-slate-900 bg-white">
                     <option value="today">Today&apos;s dollars</option>
                     <option value="future">Start-age dollars</option>
                   </select>
                 </label>
-                <Tog label="Inflation-adjusted (COLA)" checked={incomeForm.inflationAdjust} onChange={(v) => setIncomeForm((p) => ({ ...p, inflationAdjust: v }))} />
+                <Tog label="Inflation-adjusted (COLA)" checked={incomeForm.inflationAdjust} onChange={(v) => setIncomeForm((p) => ({ ...p, inflationAdjust: v }))} tooltip={FIELD_TOOLTIPS.incomeSourceInflationAdjust} />
                 <div className="flex items-center gap-2 pt-1">
                   <button type="button" onClick={commitIncomeSource} disabled={!incomeForm.description.trim() || incomeForm.amount <= 0} className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 text-white text-xs font-medium px-3 py-1.5 rounded-md">Add</button>
                   <button type="button" onClick={() => { setIncomeForm(blankIncomeForm()); setShowIncomeForm(false) }} className="text-xs text-slate-500 hover:text-slate-700">Cancel</button>
@@ -1869,50 +2432,33 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
         </div>
       )}
 
-      {step === 4 && step4View === 'decide' && (
+      {step === 4 && step4View === 'existing' && (
         <div className="space-y-4">
-          <p className="text-sm text-slate-600 text-center -mt-2 mb-2">
-            How would you like to add your accounts?
-          </p>
-          <p className="text-xs text-slate-500 text-center mb-4">
-            Connecting via Plaid is fastest and keeps your plan automatically up to date. You can always add or edit accounts later.
+          <p className="text-sm text-slate-600 leading-relaxed text-center -mt-2 mb-2">
+            You already have <span className="font-semibold text-slate-900">{existingAccounts.length}</span> account{existingAccounts.length === 1 ? '' : 's'} on your net worth dashboard. Use them for your retirement plan?
           </p>
 
-          {plaidAccounts.length > 0 ? (
-            <div className="bg-white border-2 border-blue-200 rounded-xl shadow-sm p-6">
-              <div className="flex items-center gap-2 mb-1">
-                <p className="text-sm font-semibold text-slate-900">Use your connected accounts</p>
-                <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">Recommended</span>
-              </div>
-              <p className="text-xs text-slate-500 mb-4">You have {plaidAccounts.length} account{plaidAccounts.length === 1 ? '' : 's'} already linked via Plaid. We&apos;ll import the current balances into your plan.</p>
-              <button type="button" onClick={usePlaid} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-                Looks good, continue →
-              </button>
-            </div>
-          ) : (
-            <div className="bg-white border-2 border-blue-200 rounded-xl shadow-sm p-6">
-              <div className="flex items-center gap-2 mb-1">
-                <p className="text-sm font-semibold text-slate-900">Connect with Plaid</p>
-                <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">Recommended</span>
-              </div>
-              <p className="text-xs text-slate-500 mb-4">Automatically sync balances from your bank, brokerage, and retirement accounts. Takes about 2 minutes.</p>
-              <Link href="/accounts/add" className="inline-block bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-                Connect accounts with Plaid →
-              </Link>
-            </div>
-          )}
-
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-            <p className="text-sm font-semibold text-slate-900 mb-1">Enter accounts manually</p>
-            <p className="text-xs text-slate-500 mb-4">Best if you want to get started quickly or have accounts Plaid doesn&apos;t cover (like private investments).</p>
-            <button type="button" onClick={() => setStep4View('manual')} className="border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-              Enter manually →
+          <div className="bg-white border-2 border-blue-200 rounded-xl shadow-sm p-6">
+            <p className="text-sm font-semibold text-slate-900 mb-1">Use existing accounts</p>
+            <p className="text-xs text-slate-500 mb-4">Imports all {existingAccounts.length} account{existingAccounts.length === 1 ? '' : 's'} into your plan with live linking. Balances stay in sync with the dashboard.</p>
+            <button type="button" onClick={() => importExistingAccounts()} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+              Use existing accounts →
             </button>
           </div>
 
-          <div className="text-center">
-            <button type="button" onClick={onLoadDemo} className="text-sm text-slate-500 underline hover:text-slate-700">
-              Use sample data to explore →
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+            <p className="text-sm font-semibold text-slate-900 mb-1">Choose which to include</p>
+            <p className="text-xs text-slate-500 mb-4">Pick a subset of your dashboard accounts to import.</p>
+            <button type="button" onClick={() => setStep4View('choose')} className="border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+              Choose which to include →
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+            <p className="text-sm font-semibold text-slate-900 mb-1">Add new accounts instead</p>
+            <p className="text-xs text-slate-500 mb-4">Skip the import and enter accounts fresh in this plan.</p>
+            <button type="button" onClick={() => setStep4View('decide')} className="border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+              Add new accounts instead →
             </button>
           </div>
 
@@ -1922,43 +2468,137 @@ function OnboardingFlow({ inputs, setInputs, setInput, plaidAccounts, usePlaid, 
         </div>
       )}
 
+      {step === 4 && step4View === 'choose' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 mb-1">Choose accounts to include</h2>
+            <p className="text-xs text-slate-500 leading-relaxed">Uncheck any account you don&apos;t want in this retirement plan. Selected accounts will be linked to their dashboard source.</p>
+          </div>
+
+          <div className="space-y-1.5">
+            {existingAccounts.map((e) => {
+              const key = `${e.source}:${e.sourceId}`
+              const checked = chosen.has(key)
+              return (
+                <label key={key} className="flex items-center gap-3 border border-slate-200 rounded-lg px-3 py-2 cursor-pointer hover:bg-slate-50 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(ev) => {
+                      const next = new Set(chosen)
+                      if (ev.target.checked) next.add(key); else next.delete(key)
+                      setChosen(next)
+                    }}
+                    className="rounded border-slate-300"
+                  />
+                  <span className="flex-1 min-w-0">
+                    <span className="text-slate-900 font-medium">{e.name}</span>
+                    {e.institution && <span className="text-slate-500 text-xs"> · {e.institution}</span>}
+                  </span>
+                  <span className="text-slate-700 tabular-nums">{fmt(e.balance)}</span>
+                </label>
+              )
+            })}
+          </div>
+
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={() => setStep4View('existing')} className="text-xs text-slate-500 hover:text-slate-700">← Back</button>
+            <button
+              type="button"
+              onClick={() => importExistingAccounts(existingAccounts.filter((e) => chosen.has(`${e.source}:${e.sourceId}`)))}
+              disabled={chosen.size === 0}
+              className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+            >
+              Import {chosen.size} account{chosen.size === 1 ? '' : 's'} →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 4 && step4View === 'decide' && (
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600 leading-relaxed text-center -mt-2 mb-2">
+            The fastest way to get started is to enter your account balances manually. If you want automatic updates later, you can connect via Plaid from your dashboard.
+          </p>
+
+          <div className="bg-white border-2 border-blue-200 rounded-xl shadow-sm p-6">
+            <p className="text-sm font-semibold text-slate-900 mb-1">Enter accounts manually</p>
+            <p className="text-xs text-slate-500 mb-4">Takes about 2 minutes. Enter balances for each account you have — retirement, brokerage, and cash. You can refine later.</p>
+            <button type="button" onClick={() => setStep4View('manual')} className="bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+              Enter accounts →
+            </button>
+          </div>
+
+          {(() => {
+            const plaidExisting = existingAccounts.filter((e) => e.source === 'plaid')
+            return plaidExisting.length > 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+              <p className="text-sm font-semibold text-slate-900 mb-1">Use your connected accounts</p>
+              <p className="text-xs text-slate-500 mb-4">You have {plaidExisting.length} account{plaidExisting.length === 1 ? '' : 's'} already linked via Plaid. We&apos;ll import the current balances into your plan.</p>
+              <button type="button" onClick={() => importExistingAccounts(plaidExisting)} className="border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                Import Plaid accounts →
+              </button>
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+              <p className="text-sm font-semibold text-slate-900 mb-1">Connect via Plaid instead</p>
+              <p className="text-xs text-slate-500 mb-4">Securely syncs balances from your bank, brokerage, and retirement accounts automatically. Setup takes longer (5–10 minutes per institution), but your plan stays up to date without manual work.</p>
+              <Link href="/accounts/add" className="inline-block border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                Connect accounts with Plaid →
+              </Link>
+            </div>
+          )
+          })()}
+
+          <div className="flex justify-between items-center pt-2">
+            <button type="button" onClick={() => existingAccounts.length > 0 ? setStep4View('existing') : setStep(3)} className="text-xs text-slate-500 hover:text-slate-700">← Back</button>
+          </div>
+        </div>
+      )}
+
       {step === 4 && step4View === 'manual' && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-900 mb-1">Your account totals</h2>
-            <p className="text-xs text-slate-500 leading-relaxed">Enter the total balance for each account type you have. You can skip types you don&apos;t have, and add individual accounts later.</p>
+            <h2 className="text-base font-semibold text-slate-900 mb-1">Your accounts</h2>
+            <p className="text-xs text-slate-500 leading-relaxed">Add each account you have, or combine similar accounts if you want to keep it simple. You can always refine later.</p>
+            <p className="text-xs text-slate-500 leading-relaxed mt-1">For example: &quot;Fidelity 401(k) — $425,000&quot;, or combine as &quot;All retirement accounts — $680,000&quot;. What matters is the total balance and the tax treatment.</p>
           </div>
 
           <div className="space-y-2">
-            {typeTotals.map((t) => (
-              <div key={t.type} className="grid items-center gap-2 text-xs" style={{ gridTemplateColumns: inputs.spouseEnabled ? '1.4fr 90px 1fr' : '1.6fr 1fr' }}>
-                <div className="text-slate-700 font-medium flex items-center gap-1.5">
-                  {t.label}
-                  {t.type === 'other_investment' && <InfoTip>Precious metals, crypto, alternative investments.</InfoTip>}
+            {manualRows.map((r, idx) => (
+              <div key={r.id} className="border border-slate-200 rounded-lg p-2 space-y-1.5 text-xs">
+                <div className="flex gap-1.5">
+                  <input type="text" placeholder={idx === 0 ? 'e.g., Fidelity 401(k)' : 'Account name'} value={r.name} onChange={(e) => updateRow(r.id, { name: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-slate-900" />
+                  <button type="button" onClick={() => removeRow(r.id)} className="text-slate-400 hover:text-red-500 px-1 text-sm">×</button>
                 </div>
-                {inputs.spouseEnabled && (
-                  <select value={t.owner} onChange={(e) => updateTypeTotal(t.type, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
-                    {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                <div className="grid gap-1.5" style={{ gridTemplateColumns: inputs.spouseEnabled ? '1.2fr 80px 100px' : '1.4fr 100px' }}>
+                  <select value={r.type} onChange={(e) => updateRow(r.id, { type: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white min-w-0">
+                    {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
-                )}
-                <input type="text" inputMode="numeric" placeholder="$0" value={t.balance ? fmt(t.balance) : ''} onChange={(e) => updateTypeTotal(t.type, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
+                  {inputs.spouseEnabled && (
+                    <select value={r.owner} onChange={(e) => updateRow(r.id, { owner: e.target.value })} className="border border-slate-200 rounded px-1.5 py-1.5 text-slate-900 bg-white">
+                      {OWNERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  )}
+                  <input type="text" inputMode="numeric" placeholder="$0" value={r.balance ? fmt(r.balance) : ''} onChange={(e) => updateRow(r.id, { balance: parseMoney(e.target.value) })} className="border border-slate-200 rounded px-2 py-1.5 text-slate-900 text-right" />
+                </div>
               </div>
             ))}
           </div>
 
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Need to track individual accounts? You can add named accounts after setup.
-          </p>
+          <button type="button" onClick={addRow} className="text-xs font-medium text-blue-600 hover:text-blue-700">
+            + Add another account
+          </button>
 
-          {!anyTypeBalance && (
+          {!anyRowBalance && (
             <p className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3">
-              Enter at least one account balance to proceed, or use sample data to explore.
+              Enter at least one account to continue. You can skip accounts Plaid doesn&apos;t cover and add them later in the full plan.
             </p>
           )}
 
           <div className="flex justify-between items-center pt-2">
-            <button type="button" onClick={() => setStep4View('decide')} className="text-xs text-slate-500 hover:text-slate-700">← Back to choose Plaid instead</button>
-            <button type="button" onClick={commitTypeTotals} disabled={!anyTypeBalance} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+            <button type="button" onClick={() => setStep4View('decide')} className="text-xs text-slate-500 hover:text-slate-700">← Back to account options</button>
+            <button type="button" onClick={commitManualRows} disabled={!anyRowBalance} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
               Continue →
             </button>
           </div>
@@ -2067,7 +2707,7 @@ function StatCard({ label, value, sub, warn }) {
   )
 }
 
-function PlanSummary({ inputs, monte, currentBalance, retirementBalance, finalBalance, sustainableIncome, withdrawalRate, probPct, firstYearNetSpending, totalLifetimeTaxes }) {
+function PlanSummary({ inputs, monte, currentBalance, retirementBalance, finalBalance, sustainableIncome, withdrawalRate, probPct, firstYearNetSpending, firstYearNetSpendingMonthly, firstYearTaxes, totalLifetimeTaxes }) {
   const H = ({ children }) => <span className="font-semibold text-slate-900">{children}</span>
   const probColor =
     probPct == null ? 'text-slate-900' :
@@ -2203,7 +2843,7 @@ function PlanSummary({ inputs, monte, currentBalance, retirementBalance, finalBa
 
       <Caption>Income</Caption>
       <p className="text-base text-slate-700 leading-relaxed mb-4">
-        In retirement you&apos;re planning to withdraw <H>{fmt(inputs.retirementIncomeNeeded)}</H> per year (in today&apos;s dollars). After estimated federal and state taxes, that&apos;s approximately <H>{fmt(firstYearNetSpending)}</H> in take-home spending. The 4% rule suggests your portfolio can sustainably provide <H>{fmt(sustainableIncome)}</H> annually (gross), a <H>{withdrawalRate}%</H> initial withdrawal rate — {wrCharacter}.
+        In retirement you&apos;re planning to withdraw <H>{fmt(inputs.retirementIncomeNeeded)}</H> per year (gross, in today&apos;s dollars). After estimated federal and state taxes of about <H>{fmt(firstYearTaxes)}</H>, your take-home spending is approximately <H>{fmt(firstYearNetSpending)}</H> annually — roughly <H>{fmt(Math.round((firstYearNetSpendingMonthly || 0) / 100) * 100)}</H> per month. The 4% rule suggests your portfolio can sustainably provide <H>{fmt(sustainableIncome)}</H> annually (gross), a <H>{withdrawalRate}%</H> initial withdrawal rate — {wrCharacter}.
         {ss}
         {otherSources}
         {totalLifetimeTaxes > 100000 && <>{' '}Your plan pays an estimated <H>{fmt(totalLifetimeTaxes)}</H> in taxes over your retirement — worth discussing strategies like Roth conversions or tax-aware withdrawal sequencing with an advisor.</>}
@@ -2337,47 +2977,74 @@ function IncomeTooltip({ active, payload, series }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload
   if (!d) return null
-  let totalIncome = 0
-  const lines = []
+  const guaranteed = []
+  const withdrawals = []
+  let guaranteedSub = 0, withdrawalSub = 0
   for (const s of series) {
     const v = d[s.key] || 0
-    if (Math.round(v) !== 0) {
-      lines.push({ label: s.label, color: s.color, value: v })
-      totalIncome += v
-    }
+    if (Math.round(v) === 0) continue
+    if (s.group === 'withdrawal') { withdrawals.push({ label: s.label, color: s.color, value: v }); withdrawalSub += v }
+    else { guaranteed.push({ label: s.label, color: s.color, value: v }); guaranteedSub += v }
   }
-  if (lines.length === 0 && d.totalExpenses == null) return null
   const expenses = d.totalExpenses
   const hasExpenses = expenses != null && Math.round(expenses) !== 0
-  const gap = hasExpenses ? expenses - totalIncome : 0
+  const totalFunding = guaranteedSub + withdrawalSub
+  const gap = hasExpenses ? expenses - totalFunding : 0
+  if (guaranteed.length === 0 && withdrawals.length === 0 && !hasExpenses) return null
+
+  const Row = ({ l }) => (
+    <div className="flex items-center justify-between gap-4 text-xs">
+      <span className="flex items-center gap-1.5">
+        <span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: l.color }} />
+        <span className="text-slate-600">{l.label}</span>
+      </span>
+      <span className="text-slate-900 tabular-nums">{fmt(l.value)}</span>
+    </div>
+  )
+
   return (
-    <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg text-sm">
+    <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg text-sm min-w-[220px]">
       <p className="text-slate-500 text-xs mb-1">Age {d.age}</p>
-      {lines.map((l) => (
-        <div key={l.label} className="flex items-center justify-between gap-4 text-xs">
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: l.color }} />
-            <span className="text-slate-600">{l.label}</span>
-          </span>
-          <span className="text-slate-900 font-medium tabular-nums">{fmt(l.value)}</span>
-        </div>
-      ))}
-      {lines.length > 1 && (
+      {guaranteed.length > 0 && (
+        <>
+          <p className="text-[10px] uppercase tracking-wider text-slate-400 mt-1">Guaranteed income</p>
+          {guaranteed.map((l) => <Row key={l.label} l={l} />)}
+          {guaranteed.length > 1 && (
+            <div className="flex justify-between text-xs mt-0.5">
+              <span className="text-slate-500">Subtotal</span>
+              <span className="text-slate-700 font-medium tabular-nums">{fmt(guaranteedSub)}</span>
+            </div>
+          )}
+        </>
+      )}
+      {withdrawals.length > 0 && (
+        <>
+          <p className="text-[10px] uppercase tracking-wider text-slate-400 mt-2">Portfolio withdrawals</p>
+          {withdrawals.map((l) => <Row key={l.label} l={l} />)}
+          {withdrawals.length > 1 && (
+            <div className="flex justify-between text-xs mt-0.5">
+              <span className="text-slate-500">Subtotal</span>
+              <span className="text-slate-700 font-medium tabular-nums">{fmt(withdrawalSub)}</span>
+            </div>
+          )}
+        </>
+      )}
+      {(guaranteed.length + withdrawals.length) > 0 && (
         <div className="flex justify-between text-xs border-t border-slate-100 mt-1 pt-1">
-          <span className="text-slate-600 font-medium">Total income</span>
-          <span className="text-slate-900 font-semibold tabular-nums">{fmt(totalIncome)}</span>
+          <span className="text-slate-600 font-medium">Total funding</span>
+          <span className="text-slate-900 font-semibold tabular-nums">{fmt(totalFunding)}</span>
         </div>
       )}
       {hasExpenses && (
-        <div className={`flex items-center justify-between gap-4 text-xs ${lines.length <= 1 ? 'border-t border-slate-100 mt-1 pt-1' : 'mt-0.5'}`}>
+        <div className="flex items-center justify-between gap-4 text-xs mt-0.5">
           <span className="flex items-center gap-1.5">
             <span className="inline-block w-4 h-0.5 rounded" style={{ backgroundColor: '#1e293b' }} />
             <span className="text-slate-600">Total expenses</span>
           </span>
-          <span className="text-slate-900 font-medium tabular-nums">{fmt(expenses)}</span>
+          <span className="text-slate-900 tabular-nums">{fmt(expenses)}</span>
         </div>
       )}
-      {hasExpenses && gap > 0 && (
+      {hasExpenses && Math.round(gap) > 0 && (
         <div className="flex justify-between text-xs border-t border-slate-100 mt-1 pt-1">
           <span className="text-red-600 font-medium">Gap from portfolio</span>
           <span className="text-red-600 font-semibold tabular-nums">{fmt(gap)}</span>

@@ -29,7 +29,7 @@ export async function POST(request) {
 
   const meta = ACCOUNT_TYPES[account_type] || ACCOUNT_TYPES.other
 
-  const { error } = await supabase.from('manual_accounts').insert({
+  const { data, error } = await supabase.from('manual_accounts').insert({
     user_id: user.id,
     institution_name: institution_name || null,
     name,
@@ -37,10 +37,10 @@ export async function POST(request) {
     subtype: meta.subtype,
     category: meta.category,
     current_balance: parseFloat(balance) || 0,
-  })
+  }).select('id, updated_at').single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, id: data.id, updated_at: data.updated_at })
 }
 
 export async function DELETE(request) {
@@ -51,6 +51,7 @@ export async function DELETE(request) {
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')
   const source = searchParams.get('source')
+  const cascade = searchParams.get('cascade') === '1'
 
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
 
@@ -68,6 +69,36 @@ export async function DELETE(request) {
       .eq('id', id)
       .eq('user_id', user.id)
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  // Clean up scenario references. Default: convert linked accounts to freeform.
+  // When cascade=1: remove the account from each scenario's accounts array entirely.
+  const { data: scenarios } = await supabase
+    .from('retirement_scenarios')
+    .select('id, inputs')
+    .eq('user_id', user.id)
+  for (const sc of scenarios || []) {
+    const accounts = sc.inputs?.accounts || []
+    let modified = false
+    let updated
+    if (cascade) {
+      updated = accounts.filter((a) => {
+        if (a.linkedAccount?.sourceId === id) { modified = true; return false }
+        return true
+      })
+    } else {
+      updated = accounts.map((a) => {
+        if (a.linkedAccount?.sourceId === id) { modified = true; return { ...a, linkedAccount: null } }
+        return a
+      })
+    }
+    if (modified) {
+      await supabase
+        .from('retirement_scenarios')
+        .update({ inputs: { ...sc.inputs, accounts: updated }, updated_at: new Date().toISOString() })
+        .eq('id', sc.id)
+        .eq('user_id', user.id)
+    }
   }
 
   return NextResponse.json({ ok: true })

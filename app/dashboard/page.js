@@ -34,7 +34,7 @@ export default async function DashboardPage() {
 
   if (!user) redirect('/signin')
 
-  const [plaidResult, manualResult, snapshotsResult, scenariosResult] = await Promise.all([
+  const [plaidResult, manualResult, snapshotsResult, scenariosResult, latestScenarioResult] = await Promise.all([
     supabase
       .from('plaid_accounts')
       .select(
@@ -54,9 +54,33 @@ export default async function DashboardPage() {
       .from('retirement_scenarios')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.id),
+    supabase
+      .from('retirement_scenarios')
+      .select('id, name, is_base, inputs, updated_at')
+      .eq('user_id', user.id)
+      .order('is_base', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(1),
   ])
 
   const scenarioCount = scenariosResult?.count || 0
+  const latestScenario = latestScenarioResult?.data?.[0] || null
+
+  // Build a sourceId → [scenario refs] map by scanning all scenarios' linked accounts.
+  const allScenariosRes = await supabase
+    .from('retirement_scenarios')
+    .select('id, name, inputs')
+    .eq('user_id', user.id)
+  const linkedSourceMap = {}
+  for (const sc of allScenariosRes?.data || []) {
+    for (const acct of sc.inputs?.accounts || []) {
+      const sid = acct.linkedAccount?.sourceId
+      if (!sid) continue
+      const list = linkedSourceMap[sid] || []
+      list.push({ scenarioId: sc.id, scenarioName: sc.name, accountName: acct.name })
+      linkedSourceMap[sid] = list
+    }
+  }
 
   const plaidAccounts = (plaidResult.data || []).map((a) => ({
     id: a.id,
@@ -117,6 +141,8 @@ export default async function DashboardPage() {
       snapshots={snapshots}
       financials={{ assets, liabilities, netWorth }}
       scenarioCount={scenarioCount}
+      latestScenario={latestScenario}
+      linkedSourceMap={linkedSourceMap}
     />
   )
 }

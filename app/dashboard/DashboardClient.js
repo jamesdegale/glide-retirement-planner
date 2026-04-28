@@ -22,6 +22,30 @@ const PERIODS = [
   { key: 'All', months: Infinity },
 ]
 
+function calcTypeToManualMeta(type) {
+  switch (type) {
+    case '401k': return { account_type: '401k', subtype: '401k', category: 'retirement' }
+    case 'traditional_ira': return { account_type: 'ira', subtype: 'ira', category: 'retirement' }
+    case 'roth_ira': return { account_type: 'roth_ira', subtype: 'roth_ira', category: 'retirement' }
+    case 'brokerage': return { account_type: 'brokerage', subtype: 'brokerage', category: 'investment' }
+    case 'cash': return { account_type: 'savings', subtype: 'savings', category: 'banking' }
+    case 'other_investment': return { account_type: 'other', subtype: 'other_investment', category: 'investment' }
+    default: return { account_type: 'other', subtype: 'other', category: 'other' }
+  }
+}
+
+function manualSubtypeToCalcType(account_type) {
+  switch (account_type) {
+    case '401k': return '401k'
+    case 'ira': return 'traditional_ira'
+    case 'roth_ira': return 'roth_ira'
+    case 'brokerage': return 'brokerage'
+    case 'checking':
+    case 'savings': return 'cash'
+    default: return 'brokerage'
+  }
+}
+
 const CATEGORY_ORDER = ['retirement', 'investment', 'banking', 'real_estate', 'loans']
 const CATEGORY_META = {
   retirement: { label: 'Retirement', icon: '🏦' },
@@ -97,7 +121,7 @@ function ChartTooltip({ active, payload }) {
   )
 }
 
-export default function DashboardClient({ userEmail, accounts, snapshots, financials, scenarioCount = 0 }) {
+export default function DashboardClient({ userEmail, accounts, snapshots, financials, scenarioCount = 0, latestScenario = null, linkedSourceMap = {} }) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const setupRequested = searchParams?.get('setup') === '1'
@@ -112,9 +136,12 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
     name: '',
     account_type: 'checking',
     balance: '',
+    mirrorToPlan: scenarioCount > 0,
   })
   const [manualSaving, setManualSaving] = useState(false)
   const [manualError, setManualError] = useState(null)
+  const [importingPlan, setImportingPlan] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(null)
 
   const hasAccounts = accounts.length > 0
 
@@ -168,44 +195,121 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
   const toggleCat = (cat) =>
     setCollapsedCats((prev) => ({ ...prev, [cat]: !prev[cat] }))
 
-  const removeAccount = useCallback(
-    async (id, source) => {
+  const performRemove = useCallback(
+    async (id, source, cascade = false) => {
       setRemoving(id)
       try {
-        const res = await fetch(`/api/accounts?id=${id}&source=${source}`, { method: 'DELETE' })
+        const res = await fetch(`/api/accounts?id=${id}&source=${source}${cascade ? '&cascade=1' : ''}`, { method: 'DELETE' })
         if (!res.ok) throw new Error('Remove failed')
         router.refresh()
       } catch {
         alert('Failed to remove account')
       } finally {
         setRemoving(null)
+        setConfirmDelete(null)
       }
     },
     [router]
+  )
+
+  const removeAccount = useCallback(
+    (id, source) => {
+      const linkedScenarios = linkedSourceMap[id] || null
+      if (linkedScenarios && linkedScenarios.length > 0) {
+        const account = accounts.find((a) => a.id === id)
+        setConfirmDelete({ id, source, account, linkedScenarios })
+        return
+      }
+      performRemove(id, source, false)
+    },
+    [linkedSourceMap, accounts, performRemove]
   )
 
   const saveManualAccount = useCallback(async () => {
     setManualSaving(true)
     setManualError(null)
     try {
+      const { mirrorToPlan, ...payload } = manualForm
       const res = await fetch('/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(manualForm),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
         throw new Error(d.error || 'Save failed')
       }
+      const { id, updated_at } = await res.json()
+
+      // If "Also use in retirement plan" is checked and a base scenario exists, append to it.
+      if (mirrorToPlan && latestScenario && id) {
+        try {
+          const planType = manualSubtypeToCalcType(manualForm.account_type)
+          const newAcct = {
+            id: crypto.randomUUID(),
+            name: manualForm.name,
+            type: planType,
+            owner: 'self',
+            balance: parseFloat(manualForm.balance) || 0,
+            linkedAccount: { source: 'manual', sourceId: id, sourceUpdatedAt: updated_at || new Date().toISOString() },
+          }
+          const nextInputs = {
+            ...latestScenario.inputs,
+            accounts: [...(latestScenario.inputs?.accounts || []), newAcct],
+          }
+          await fetch('/api/scenarios', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: latestScenario.id, inputs: nextInputs }),
+          })
+        } catch {
+          // Mirror failed; account still saved on dashboard.
+        }
+      }
+
       setShowManualForm(false)
-      setManualForm({ institution_name: '', name: '', account_type: 'checking', balance: '' })
+      setManualForm({ institution_name: '', name: '', account_type: 'checking', balance: '', mirrorToPlan: scenarioCount > 0 })
       router.refresh()
     } catch (err) {
       setManualError(err.message)
     } finally {
       setManualSaving(false)
     }
-  }, [manualForm, router])
+  }, [manualForm, router, latestScenario, scenarioCount])
+
+  const importPlanAccounts = useCallback(async (subset) => {
+    if (!latestScenario || importingPlan) return
+    const candidates = (latestScenario.inputs?.accounts || []).filter((a) => !a.linkedAccount && (a.balance || 0) > 0 && a.name?.trim())
+    const chosen = subset ? candidates.filter((a) => subset.has(a.id)) : candidates
+    if (chosen.length === 0) return
+    setImportingPlan(true)
+    try {
+      const updates = []
+      for (const a of chosen) {
+        const meta = calcTypeToManualMeta(a.type)
+        const res = await fetch('/api/accounts', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: a.name, account_type: meta.account_type, balance: a.balance, institution_name: null }),
+        })
+        if (!res.ok) continue
+        const { id, updated_at } = await res.json()
+        updates.push({ planId: a.id, sourceId: id, sourceUpdatedAt: updated_at || new Date().toISOString() })
+      }
+      if (updates.length > 0) {
+        const updatedAccounts = (latestScenario.inputs?.accounts || []).map((a) => {
+          const u = updates.find((x) => x.planId === a.id)
+          if (!u) return a
+          return { ...a, linkedAccount: { source: 'manual', sourceId: u.sourceId, sourceUpdatedAt: u.sourceUpdatedAt } }
+        })
+        await fetch('/api/scenarios', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: latestScenario.id, inputs: { ...latestScenario.inputs, accounts: updatedAccounts } }),
+        })
+      }
+      router.refresh()
+    } finally {
+      setImportingPlan(false)
+    }
+  }, [latestScenario, importingPlan, router])
 
   const handleSignOut = useCallback(async () => {
     const { createClient } = await import('../../lib/supabase')
@@ -231,6 +335,10 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
           onAddManual={() => setShowManualForm(true)}
           onSaveManual={saveManualAccount}
           onCancelManual={() => setShowManualForm(false)}
+          latestScenario={latestScenario}
+          scenarioCount={scenarioCount}
+          onImportPlan={() => importPlanAccounts()}
+          importingPlan={importingPlan}
         />
       </Shell>
     )
@@ -287,6 +395,12 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
                           : stale
                             ? 'bg-red-400'
                             : 'bg-emerald-400'
+                        const linkedScenarios = linkedSourceMap[a.id] || null
+                        const linkTitle = linkedScenarios
+                          ? linkedScenarios.length === 1
+                            ? `Linked to ${linkedScenarios[0].scenarioName}`
+                            : `Linked to ${linkedScenarios.length} retirement plans`
+                          : null
 
                         return (
                           <div
@@ -306,6 +420,12 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
                                   {a.institution}
                                   {a.mask && <span className="text-slate-400"> ···{a.mask}</span>}
                                 </span>
+                                {linkedScenarios && (
+                                  <span title={linkTitle} className="flex items-center gap-0.5 text-emerald-600 text-[10px] font-medium flex-shrink-0">
+                                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                    {linkedScenarios.length > 1 ? `Linked ×${linkedScenarios.length}` : 'Linked'}
+                                  </span>
+                                )}
                               </div>
                               <div className="flex items-center gap-1 flex-shrink-0">
                                 <span className="text-[13px] font-semibold text-slate-900 tabular-nums">
@@ -387,6 +507,7 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
               error={manualError}
               onSave={saveManualAccount}
               onCancel={() => setShowManualForm(false)}
+              scenarioCount={scenarioCount}
             />
           )}
 
@@ -538,6 +659,45 @@ export default function DashboardClient({ userEmail, accounts, snapshots, financ
           </div>
         </aside>
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-5">
+            <h3 className="text-sm font-semibold text-slate-900 mb-2">Delete &ldquo;{confirmDelete.account?.institution || confirmDelete.account?.name}&rdquo;?</h3>
+            <p className="text-sm text-slate-600 leading-relaxed mb-4">
+              This account is also used in
+              {' '}
+              {confirmDelete.linkedScenarios.length === 1
+                ? <>your retirement plan (<span className="font-medium text-slate-900">{confirmDelete.linkedScenarios[0].scenarioName}</span>)</>
+                : <><span className="font-medium text-slate-900">{confirmDelete.linkedScenarios.length}</span> retirement plans ({confirmDelete.linkedScenarios.map((s) => s.scenarioName).join(', ')})</>
+              }.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => performRemove(confirmDelete.id, confirmDelete.source, false)}
+                disabled={removing === confirmDelete.id}
+                className="border border-slate-200 hover:bg-slate-50 disabled:opacity-50 text-slate-800 text-sm font-medium px-3 py-2 rounded-lg text-left"
+              >
+                Delete from dashboard only — keep in plans as freeform
+              </button>
+              <button
+                onClick={() => performRemove(confirmDelete.id, confirmDelete.source, true)}
+                disabled={removing === confirmDelete.id}
+                className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white text-sm font-medium px-3 py-2 rounded-lg text-left"
+              >
+                Delete from dashboard and all linked plans
+              </button>
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={removing === confirmDelete.id}
+                className="text-slate-500 hover:text-slate-700 text-sm font-medium px-3 py-2"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Shell>
   )
 }
@@ -637,7 +797,7 @@ function Row({ label, value, bold }) {
   )
 }
 
-function ManualForm({ form, setForm, saving, error, onSave, onCancel }) {
+function ManualForm({ form, setForm, saving, error, onSave, onCancel, scenarioCount = 0 }) {
   return (
     <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
       <h3 className="text-sm font-semibold text-slate-900 mb-4">Add account manually</h3>
@@ -687,6 +847,17 @@ function ManualForm({ form, setForm, saving, error, onSave, onCancel }) {
           />
         </label>
       </div>
+      {scenarioCount > 0 && (
+        <label className="flex items-center gap-2 mt-4 text-sm text-slate-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={!!form.mirrorToPlan}
+            onChange={(e) => setForm({ ...form, mirrorToPlan: e.target.checked })}
+            className="rounded border-slate-300"
+          />
+          Also use this account in my retirement plan
+        </label>
+      )}
       {error && <p className="mt-3 text-red-600 text-sm">{error}</p>}
       <div className="flex gap-3 mt-4">
         <button
@@ -716,7 +887,12 @@ function EmptyState({
   manualError,
   onSaveManual,
   onCancelManual,
+  latestScenario,
+  scenarioCount,
+  onImportPlan,
+  importingPlan,
 }) {
+  const planAccounts = (latestScenario?.inputs?.accounts || []).filter((a) => !a.linkedAccount && (a.balance || 0) > 0 && a.name?.trim())
   return (
     <div className="max-w-[900px] mx-auto px-4 py-12 sm:py-16">
       <div className="text-center mb-8">
@@ -725,6 +901,24 @@ function EmptyState({
           Connect your accounts to see your full financial picture in one place.
         </p>
       </div>
+
+      {planAccounts.length > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6 mb-6">
+          <p className="text-sm font-semibold text-slate-900 mb-1">
+            You have {planAccounts.length} account{planAccounts.length === 1 ? '' : 's'} in your retirement plan
+          </p>
+          <p className="text-xs text-slate-600 leading-relaxed mb-4">
+            Add them to your dashboard too? They&apos;ll stay linked, so future balance updates flow both ways.
+          </p>
+          <button
+            onClick={onImportPlan}
+            disabled={importingPlan}
+            className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
+            {importingPlan ? 'Importing…' : `Use plan accounts →`}
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Link
@@ -777,6 +971,7 @@ function EmptyState({
             error={manualError}
             onSave={onSaveManual}
             onCancel={onCancelManual}
+            scenarioCount={scenarioCount}
           />
         </div>
       )}
